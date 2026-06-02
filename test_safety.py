@@ -36,6 +36,9 @@ MUTATING = [
     "yd_callouts_link", "yd_metrika_label_link", "yd_metrika_goal_delete",
     "yd_metrika_grant_add", "yd_metrika_upload_conversions", "yd_videos_upload",
     "yd_excluded_sites_update", "yd_blocked_ips_update", "yd_campaign_strategy_update",
+    "yd_keywords_suspend", "yd_keywords_resume", "yd_keywords_delete",
+    "yd_audience_targets_suspend", "yd_audience_targets_resume",
+    "yd_retargeting_lists_update",
 ]
 READONLY = [
     "yd_campaigns_get", "yd_keywords_research", "yd_keywords_has_volume",
@@ -43,6 +46,7 @@ READONLY = [
     "yd_wordstat_regions_tree", "yd_metrika_report", "yd_metrika_report_comparison",
     "yd_metrika_counters_get", "yd_metrika_conversions_status",
     "yd_excluded_sites_get", "yd_regions_get", "yd_interests_get",
+    "yd_changes_timestamp_get",
 ]
 for n in MUTATING:
     check(f"{n} is mutating", server._is_mutating(n) is True)

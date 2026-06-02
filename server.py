@@ -117,7 +117,8 @@ async def _api(client: httpx.AsyncClient, service: str, method: str, params: dic
 # ── Access control ─────────────────────────────────────────────────────
 
 _MUTATING_TOKENS = ("_add", "_create", "_update", "_delete", "_action",
-                    "_set", "_toggle", "_link", "_unlink", "_upload")
+                    "_set", "_toggle", "_link", "_unlink", "_upload",
+                    "_suspend", "_resume")
 
 
 def _is_mutating(name: str) -> bool:

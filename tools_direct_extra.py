@@ -761,7 +761,7 @@ async def _handle_excluded_sites_get(client, args, config):
     }, **config)
     camps = data.get("result", {}).get("Campaigns", [])
     if camps:
-        sites = camps[0].get("ExcludedSites", {}).get("Items", [])
+        sites = (camps[0].get("ExcludedSites") or {}).get("Items") or []
         return _result({"campaign_id": args["campaign_id"], "excluded_sites": sites, "count": len(sites)})
     return _result({"error": "Campaign not found"})
 
@@ -847,6 +847,69 @@ async def _handle_campaign_strategy_update(client, args, config):
     return _result(data.get("result", data))
 
 
+# ── Keywords: suspend / resume / delete ───────────────────────────────
+
+async def _handle_keywords_suspend(client, args, config):
+    data = await _api(client, "keywords", "suspend", {"SelectionCriteria": {"Ids": args["ids"]}}, **config)
+    return _result(data.get("result", data))
+
+
+async def _handle_keywords_resume(client, args, config):
+    data = await _api(client, "keywords", "resume", {"SelectionCriteria": {"Ids": args["ids"]}}, **config)
+    return _result(data.get("result", data))
+
+
+async def _handle_keywords_delete(client, args, config):
+    data = await _api(client, "keywords", "delete", {"SelectionCriteria": {"Ids": args["ids"]}}, **config)
+    return _result(data.get("result", data))
+
+
+# ── AudienceTargets: suspend / resume ─────────────────────────────────
+
+async def _handle_audience_targets_suspend(client, args, config):
+    data = await _api(client, "audiencetargets", "suspend", {"SelectionCriteria": {"Ids": args["ids"]}}, **config)
+    return _result(data.get("result", data))
+
+
+async def _handle_audience_targets_resume(client, args, config):
+    data = await _api(client, "audiencetargets", "resume", {"SelectionCriteria": {"Ids": args["ids"]}}, **config)
+    return _result(data.get("result", data))
+
+
+# ── RetargetingLists: update ──────────────────────────────────────────
+
+async def _handle_retargeting_lists_update(client, args, config):
+    item = {"Id": args["id"]}
+    if name := args.get("name"):
+        item["Name"] = name
+    if desc := args.get("description"):
+        item["Description"] = desc
+    if rules := args.get("rules"):
+        item["Rules"] = [{
+            "Operator": r["operator"],
+            "Arguments": [
+                {"ExternalId": g["goal_id"], "MembershipLifeSpan": g["membership_life_span"]}
+                for g in r["goals"]
+            ],
+        } for r in rules]
+    data = await _api(client, "retargetinglists", "update", {"RetargetingLists": [item]}, **config)
+    return _result(data.get("result", data))
+
+
+# ── Changes: recent timestamp ─────────────────────────────────────────
+
+async def _handle_changes_timestamp_get(client, args, config):
+    """Get current server timestamp via changes.checkDictionaries.
+
+    Unlike changes.check, this endpoint does not require CampaignIds/AdGroupIds/AdIds,
+    so it's ideal for obtaining a baseline server timestamp. A sentinel past timestamp
+    is used purely to satisfy API validation — the response Timestamp is what we need.
+    """
+    data = await _api(client, "changes", "checkDictionaries", {"Timestamp": "2020-01-01T00:00:00Z"}, **config)
+    result = data.get("result", {})
+    return _result({"timestamp": result.get("Timestamp", ""), "dictionaries": result.get("Dictionaries", [])})
+
+
 # ── Tool definitions for new tools ────────────────────────────────────
 
 _NEW_TOOLS = [
@@ -901,6 +964,104 @@ _NEW_TOOLS = [
             "required": ["campaign_id"],
         },
     ),
+    Tool(
+        name="yd_keywords_suspend",
+        description="Suspend (pause) keywords by IDs. Stops impressions without deleting.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ids": {"type": "array", "items": {"type": "integer"}, "description": "Keyword IDs to suspend"},
+            },
+            "required": ["ids"],
+        },
+    ),
+    Tool(
+        name="yd_keywords_resume",
+        description="Resume previously suspended keywords by IDs.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ids": {"type": "array", "items": {"type": "integer"}, "description": "Keyword IDs to resume"},
+            },
+            "required": ["ids"],
+        },
+    ),
+    Tool(
+        name="yd_keywords_delete",
+        description="Permanently delete keywords by IDs.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ids": {"type": "array", "items": {"type": "integer"}, "description": "Keyword IDs to delete"},
+            },
+            "required": ["ids"],
+        },
+    ),
+    Tool(
+        name="yd_audience_targets_suspend",
+        description="Suspend (pause) audience targets by IDs.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ids": {"type": "array", "items": {"type": "integer"}, "description": "Audience target IDs to suspend"},
+            },
+            "required": ["ids"],
+        },
+    ),
+    Tool(
+        name="yd_audience_targets_resume",
+        description="Resume previously suspended audience targets by IDs.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ids": {"type": "array", "items": {"type": "integer"}, "description": "Audience target IDs to resume"},
+            },
+            "required": ["ids"],
+        },
+    ),
+    Tool(
+        name="yd_retargeting_lists_update",
+        description="Update an existing retargeting list. Any field (name, description, rules) may be changed.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "description": "Retargeting list ID to update"},
+                "name": {"type": "string", "description": "New name (optional)"},
+                "description": {"type": "string", "description": "New description (optional)"},
+                "rules": {
+                    "type": "array",
+                    "description": "Replacement rules (optional). Each rule: {operator: AND|OR|NOT, goals: [{goal_id, membership_life_span}]}",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "operator": {"type": "string", "enum": ["AND", "OR", "NOT"]},
+                            "goals": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "goal_id": {"type": "integer"},
+                                        "membership_life_span": {"type": "integer", "description": "Days (1-540)"},
+                                    },
+                                    "required": ["goal_id", "membership_life_span"],
+                                },
+                            },
+                        },
+                        "required": ["operator", "goals"],
+                    },
+                },
+            },
+            "required": ["id"],
+        },
+    ),
+    Tool(
+        name="yd_changes_timestamp_get",
+        description="Get current server timestamp (UTC) from Yandex Direct. Use as starting point for yd_changes_check.",
+        inputSchema={
+            "type": "object",
+            "properties": {},
+        },
+    ),
 ]
 
 
@@ -915,6 +1076,13 @@ def register_extra_direct_handlers(dispatch: dict):
     dispatch["yd_excluded_sites_update"] = _handle_excluded_sites_update
     dispatch["yd_blocked_ips_update"] = _handle_blocked_ips_update
     dispatch["yd_campaign_strategy_update"] = _handle_campaign_strategy_update
+    dispatch["yd_keywords_suspend"] = _handle_keywords_suspend
+    dispatch["yd_keywords_resume"] = _handle_keywords_resume
+    dispatch["yd_keywords_delete"] = _handle_keywords_delete
+    dispatch["yd_audience_targets_suspend"] = _handle_audience_targets_suspend
+    dispatch["yd_audience_targets_resume"] = _handle_audience_targets_resume
+    dispatch["yd_retargeting_lists_update"] = _handle_retargeting_lists_update
+    dispatch["yd_changes_timestamp_get"] = _handle_changes_timestamp_get
 
 
 # Append new tools to the main list
