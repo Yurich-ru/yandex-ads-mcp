@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""MCP Server for Yandex Direct API v5, Yandex Metrika API, and Wordstat API.
+"""MCP Server for Yandex Direct API v5, Yandex Metrika API, Yandex Audience API, and Wordstat API.
 
-Provides 95+ tools for managing advertising campaigns, web analytics, and keyword research.
+Provides 150 tools for managing advertising campaigns, audiences, web analytics, and keyword research.
 See README.md for setup instructions.
 """
 
@@ -28,7 +28,14 @@ API_URL = os.environ.get("YD_API_URL", "https://api.direct.yandex.com/json/v5")
 SANDBOX_URL = "https://api-sandbox.direct.yandex.com/json/v5"
 WORDSTAT_URL = "https://searchapi.api.cloud.yandex.net/v2/wordstat"
 TOKEN = os.environ.get("YD_OAUTH_TOKEN", "")
+# Optional per-service tokens for multi-account setups (e.g. Direct lives in one
+# Yandex account, Metrika/Audience in another). Fall back to YD_OAUTH_TOKEN.
+METRIKA_TOKEN = os.environ.get("YD_METRIKA_TOKEN", "") or TOKEN
+AUDIENCE_TOKEN = os.environ.get("YD_AUDIENCE_TOKEN", "") or TOKEN
 YC_FOLDER_ID = os.environ.get("YC_FOLDER_ID", "")
+# Service-account API key for Wordstat (Search API). Required for OAuth tokens
+# issued after 2026-06-01: Yandex Cloud no longer exchanges them for IAM tokens.
+YC_API_KEY = os.environ.get("YC_API_KEY", "")
 USE_SANDBOX = _env_bool("YD_SANDBOX")
 LOGIN = os.environ.get("YD_LOGIN", "")  # optional default Client-Login for agency accounts
 
@@ -63,6 +70,7 @@ def _log_body(prefix, *args):
 
 # ── Extra modules ──────────────────────────────────────────────────────
 from tools_metrika import METRIKA_TOOLS, register_metrika_handlers
+from tools_audience import AUDIENCE_TOOLS, register_audience_handlers
 from tools_direct_extra import (
     EXTRA_DIRECT_TOOLS,
     register_extra_direct_handlers,
@@ -118,7 +126,7 @@ async def _api(client: httpx.AsyncClient, service: str, method: str, params: dic
 
 _MUTATING_TOKENS = ("_add", "_create", "_update", "_delete", "_action",
                     "_set", "_toggle", "_link", "_unlink", "_upload",
-                    "_suspend", "_resume")
+                    "_suspend", "_resume", "_confirm", "_reprocess", "_undelete")
 
 
 def _is_mutating(name: str) -> bool:
@@ -126,9 +134,15 @@ def _is_mutating(name: str) -> bool:
     return any(t in name for t in _MUTATING_TOKENS)
 
 
+_AUDIENCE_NAMES = frozenset(t.name for t in AUDIENCE_TOOLS)
+
+
 def _is_direct(name: str) -> bool:
-    """True for Yandex Direct tools (which use Client-Login); Metrika/Wordstat don't."""
-    return name.startswith("yd_") and not name.startswith("yd_metrika") and not name.startswith("yd_wordstat")
+    """True for Yandex Direct tools (which use Client-Login); Metrika/Wordstat/Audience don't."""
+    return (name.startswith("yd_")
+            and not name.startswith("yd_metrika")
+            and not name.startswith("yd_wordstat")
+            and name not in _AUDIENCE_NAMES)
 
 
 def _deny(reason: str):
@@ -1001,7 +1015,7 @@ def _augment_schema(tool: Tool) -> Tool:
 
 @server.list_tools()
 async def list_tools():
-    return [_augment_schema(t) for t in (TOOLS + METRIKA_TOOLS + EXTRA_DIRECT_TOOLS)]
+    return [_augment_schema(t) for t in (TOOLS + METRIKA_TOOLS + EXTRA_DIRECT_TOOLS + AUDIENCE_TOOLS)]
 
 
 def _rubles_to_micros(rubles: float) -> int:
@@ -1146,6 +1160,8 @@ async def _dispatch(name: str, arguments: dict):
                 return await _extra_dispatch[name](client, arguments, _extra_config)
             elif name in _metrika_dispatch:
                 return await _metrika_dispatch[name](client, arguments)
+            elif name in _audience_dispatch:
+                return await _audience_dispatch[name](client, arguments)
             else:
                 return _result({"error": f"Unknown tool: {name}"})
         except Exception as e:
@@ -1898,10 +1914,13 @@ async def _get_iam_token(client: httpx.AsyncClient) -> str:
 async def _wordstat_request(client: httpx.AsyncClient, endpoint: str, body: dict) -> dict:
     """Call Wordstat API via Yandex Cloud Search API."""
     url = f"{WORDSTAT_URL}{endpoint}"
-    iam = await _get_iam_token(client)
+    if YC_API_KEY:
+        auth = f"Api-Key {YC_API_KEY}"
+    else:
+        auth = f"Bearer {await _get_iam_token(client)}"
     body["folderId"] = YC_FOLDER_ID
     headers = {
-        "Authorization": f"Bearer {iam}",
+        "Authorization": auth,
         "Content-Type": "application/json",
     }
     _log_body("WORDSTAT REQUEST %s: %s", url, json.dumps(body, ensure_ascii=False)[:2000])
@@ -1975,7 +1994,10 @@ async def _handle_wordstat_regions_tree(client, args):
 # ── Register extra modules ─────────────────────────────────────────────
 
 _metrika_dispatch = {}
-register_metrika_handlers(_metrika_dispatch, TOKEN)
+register_metrika_handlers(_metrika_dispatch, METRIKA_TOKEN)
+
+_audience_dispatch = {}
+register_audience_handlers(_audience_dispatch, AUDIENCE_TOKEN)
 
 _extra_dispatch = {}
 register_extra_direct_handlers(_extra_dispatch)
@@ -1984,6 +2006,7 @@ _extra_config = {
     "base_url": _base_url(),
     "login": LOGIN,
     "folder_id": YC_FOLDER_ID,
+    "yc_api_key": YC_API_KEY,
 }
 
 
@@ -1992,7 +2015,7 @@ async def main():
         logger.error("YD_OAUTH_TOKEN environment variable is required")
         sys.exit(1)
     logger.info("Starting Yandex Ads MCP server (sandbox=%s, tools=%d)",
-                USE_SANDBOX, len(TOOLS) + len(METRIKA_TOOLS) + len(EXTRA_DIRECT_TOOLS))
+                USE_SANDBOX, len(TOOLS) + len(METRIKA_TOOLS) + len(EXTRA_DIRECT_TOOLS) + len(AUDIENCE_TOOLS))
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 

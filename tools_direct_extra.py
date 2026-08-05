@@ -450,7 +450,8 @@ EXTRA_DIRECT_TOOLS = [
     ),
     Tool(
         name="yd_wordstat_user_info",
-        description="Get Wordstat API quota info (uses IAM token).",
+        description="Get Wordstat API quota info. NOTE: as of Aug 2026 Yandex returns 404 for the "
+                    "userInfo endpoint (apparently removed); other Wordstat tools are unaffected.",
         inputSchema={"type": "object", "properties": {}},
     ),
 ]
@@ -711,11 +712,13 @@ async def _handle_interests_get(client, args, config):
 
 
 async def _handle_wordstat_user_info(client, args, config):
-    oauth_token = config["token"]
     folder_id = config.get("folder_id", "")
-    iam = await _get_iam(client, oauth_token)
+    if config.get("yc_api_key"):
+        auth = f"Api-Key {config['yc_api_key']}"
+    else:
+        auth = f"Bearer {await _get_iam(client, config['token'])}"
     url = "https://searchapi.api.cloud.yandex.net/v2/wordstat/userInfo"
-    headers = {"Authorization": f"Bearer {iam}", "Content-Type": "application/json"}
+    headers = {"Authorization": auth, "Content-Type": "application/json"}
     body = {"folderId": folder_id}
     resp = await client.post(url, headers=headers, json=body, timeout=30)
     if resp.status_code != 200:

@@ -39,6 +39,10 @@ MUTATING = [
     "yd_keywords_suspend", "yd_keywords_resume", "yd_keywords_delete",
     "yd_audience_targets_suspend", "yd_audience_targets_resume",
     "yd_retargeting_lists_update",
+    "yd_audience_segment_upload", "yd_audience_segment_confirm",
+    "yd_audience_segment_reprocess", "yd_audience_segment_create_lookalike",
+    "yd_audience_grant_add", "yd_audience_grant_delete",
+    "yd_audience_pixel_undelete", "yd_audience_delegate_add",
 ]
 READONLY = [
     "yd_campaigns_get", "yd_keywords_research", "yd_keywords_has_volume",
@@ -47,17 +51,27 @@ READONLY = [
     "yd_metrika_counters_get", "yd_metrika_conversions_status",
     "yd_excluded_sites_get", "yd_regions_get", "yd_interests_get",
     "yd_changes_timestamp_get",
+    "yd_audience_segments_get", "yd_audience_pixels_get",
+    "yd_audience_grants_get", "yd_audience_accounts_get", "yd_audience_delegates_get",
 ]
 for n in MUTATING:
     check(f"{n} is mutating", server._is_mutating(n) is True)
 for n in READONLY:
     check(f"{n} is read-only", server._is_mutating(n) is False)
 
-print("== direct vs metrika/wordstat ==")
+print("== direct vs metrika/wordstat/audience ==")
 check("yd_campaigns_add is direct", server._is_direct("yd_campaigns_add") is True)
 check("yd_vcards_add is direct", server._is_direct("yd_vcards_add") is True)
 check("yd_metrika_report not direct", server._is_direct("yd_metrika_report") is False)
 check("yd_wordstat_top_requests not direct", server._is_direct("yd_wordstat_top_requests") is False)
+check("yd_audience_targets_add is direct (Direct API AudienceTargets)",
+      server._is_direct("yd_audience_targets_add") is True)
+check("yd_audience_segments_get not direct (Audience API)",
+      server._is_direct("yd_audience_segments_get") is False)
+
+print("== per-service token fallback ==")
+check("METRIKA_TOKEN falls back to TOKEN", server.METRIKA_TOKEN == server.TOKEN)
+check("AUDIENCE_TOKEN falls back to TOKEN", server.AUDIENCE_TOKEN == server.TOKEN)
 
 print("== logging default ==")
 check("no log file written by default", server.LOG_FILE == "" and
@@ -83,6 +97,10 @@ check("direct tool exposes client_login", "client_login" in add_props)
 check("mutating tool exposes confirm (YD_CONFIRM on)", "confirm" in add_props)
 metrika_props = tools["yd_metrika_report"].inputSchema["properties"]
 check("metrika report has no client_login", "client_login" not in metrika_props)
+aud_props = tools["yd_audience_segment_delete"].inputSchema["properties"]
+check("audience tool has no client_login", "client_login" not in aud_props)
+check("mutating audience tool exposes confirm (YD_CONFIRM on)", "confirm" in aud_props)
+check("all audience tools dispatched", len(server._audience_dispatch) == len(server.AUDIENCE_TOOLS))
 
 print("== IAM expiresAt parsing ==")
 from tools_direct_extra import iam_expiry  # noqa: E402
