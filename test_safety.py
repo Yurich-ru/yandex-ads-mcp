@@ -16,6 +16,9 @@ import sys
 # Token must be present for the module to import cleanly under some setups.
 os.environ.setdefault("YD_OAUTH_TOKEN", "test-token")
 os.environ["YD_CONFIRM"] = "true"  # so schemas advertise the confirm flag
+# The fallback checks below assume per-service tokens are NOT set.
+os.environ.pop("YD_METRIKA_TOKEN", None)
+os.environ.pop("YD_AUDIENCE_TOKEN", None)
 
 import server  # noqa: E402
 from tools_direct_extra import annotate_partial  # noqa: E402

@@ -1,6 +1,6 @@
 [project]
 name = "yandex-ads-mcp"
-version = "1.1.0"
+version = "1.1.1"
 description = "MCP server for Yandex Direct, Yandex Metrika, Yandex Audience, and Wordstat APIs"
 readme = "README.md"
 license = {text = "MIT"}

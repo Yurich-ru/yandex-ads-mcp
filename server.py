@@ -823,12 +823,16 @@ TOOLS = [
     # ── Medium priority: RetargetingLists ──────────────────────────────
     Tool(
         name="yd_retargeting_lists_add",
-        description="Create retargeting/audience conditions based on Yandex Metrika goals or audience segments.",
+        description="Create retargeting/audience conditions based on Yandex Metrika goals/segments or "
+                    "Yandex Audience segments.",
         inputSchema={
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Condition name (max 250 chars)"},
                 "description": {"type": "string", "description": "Description (optional)"},
+                "type": {"type": "string", "enum": ["RETARGETING", "AUDIENCE"],
+                         "description": "AUDIENCE = interests/audience-only condition for ad groups without "
+                                        "keywords; default RETARGETING"},
                 "rules": {
                     "type": "array",
                     "items": {
@@ -840,10 +844,16 @@ TOOLS = [
                                 "items": {
                                     "type": "object",
                                     "properties": {
-                                        "goal_id": {"type": "integer", "description": "Metrika goal or segment ID"},
-                                        "membership_life_span": {"type": "integer", "description": "Days (1-540, or 0 for all time)"},
+                                        "goal_id": {"type": "integer",
+                                                    "description": "Raw ExternalId: Metrika goal = goal id; "
+                                                                   "Metrika segment = id + 1000000000 (auto-segment: id + 1500000000); "
+                                                                   "Yandex Audience segment = id + 2000000000 (or use audience_segment_id); "
+                                                                   "interest = interest id with string prefix 10/20/30 (short/long/any term)"},
+                                        "audience_segment_id": {"type": "integer",
+                                                                "description": "Yandex Audience segment ID as-is (encoded to ExternalId "
+                                                                               "automatically; alternative to goal_id)"},
+                                        "membership_life_span": {"type": "integer", "description": "Days (1-540). Required for Metrika goals; ignored for Metrika/Audience segments"},
                                     },
-                                    "required": ["goal_id", "membership_life_span"],
                                 },
                             },
                         },
@@ -1798,21 +1808,28 @@ async def _handle_audience_targets_delete(client, args):
 
 # ── RetargetingLists ──────────────────────────────────────────────────
 
+_AUDIENCE_SEGMENT_ID_OFFSET = 2_000_000_000  # Direct encodes Audience segments as id + 2e9
+
+
 async def _handle_retargeting_lists_add(client, args):
     rules = []
     for r in args["rules"]:
-        rule = {
-            "Operator": r["operator"],
-            "Arguments": [
-                {"ExternalId": g["goal_id"], "MembershipLifeSpan": g["membership_life_span"]}
-                for g in r["goals"]
-            ],
-        }
-        rules.append(rule)
+        arguments = []
+        for g in r["goals"]:
+            if g.get("audience_segment_id") is not None:
+                arg = {"ExternalId": _AUDIENCE_SEGMENT_ID_OFFSET + g["audience_segment_id"]}
+            else:
+                arg = {"ExternalId": g["goal_id"]}
+            if g.get("membership_life_span") is not None:
+                arg["MembershipLifeSpan"] = g["membership_life_span"]
+            arguments.append(arg)
+        rules.append({"Operator": r["operator"], "Arguments": arguments})
     item = {
         "Name": args["name"],
         "Rules": rules,
     }
+    if t := args.get("type"):
+        item["Type"] = t
     if desc := args.get("description"):
         item["Description"] = desc
     data = await _api(client, "retargetinglists", "add", {"RetargetingLists": [item]})
