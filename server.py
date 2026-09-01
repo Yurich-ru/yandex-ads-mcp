@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MCP Server for Yandex Direct API v5, Yandex Metrika API, Yandex Audience API, and Wordstat API.
 
-Provides 150 tools for managing advertising campaigns, audiences, web analytics, and keyword research.
+Provides 151 tools for managing advertising campaigns, audiences, web analytics, and keyword research.
 See README.md for setup instructions.
 """
 
@@ -38,6 +38,23 @@ YC_FOLDER_ID = os.environ.get("YC_FOLDER_ID", "")
 YC_API_KEY = os.environ.get("YC_API_KEY", "")
 USE_SANDBOX = _env_bool("YD_SANDBOX")
 LOGIN = os.environ.get("YD_LOGIN", "")  # optional default Client-Login for agency accounts
+
+
+def _parse_token_map(raw: str) -> dict:
+    """'login:token,login2:token2' -> {login: token}; malformed entries are skipped."""
+    out = {}
+    for pair in raw.split(","):
+        if ":" not in pair:
+            continue
+        login, token = pair.split(":", 1)
+        if login.strip() and token.strip():
+            out[login.strip()] = token.strip()
+    return out
+
+
+# Extra Direct cabinets (non-agency multi-account): each login gets its own token.
+# Selected per call via the client_login argument (or YD_LOGIN as default).
+DIRECT_TOKENS = _parse_token_map(os.environ.get("YD_DIRECT_TOKENS", ""))
 
 # Safety / access control
 READONLY = _env_bool("YD_READONLY")   # block every mutating tool (add/update/delete/action/set/...)
@@ -77,12 +94,15 @@ from tools_direct_extra import (
     client_login_var,
     annotate_partial,
     set_log_bodies,
+    set_direct_tokens,
+    direct_headers,
     request_with_retry,
     iam_expiry,
     log_units,
 )
 
 set_log_bodies(LOG_BODIES)
+set_direct_tokens(DIRECT_TOKENS)
 
 server = Server("yandex-ads")
 
@@ -97,15 +117,8 @@ def _effective_login() -> str:
 
 
 def _headers():
-    h = {
-        "Authorization": f"Bearer {TOKEN}",
-        "Accept-Language": "ru",
-        "Content-Type": "application/json",
-    }
-    login = _effective_login()
-    if login:
-        h["Client-Login"] = login
-    return h
+    """Bearer + optional Client-Login; a login from YD_DIRECT_TOKENS selects its own token."""
+    return direct_headers(TOKEN, LOGIN)
 
 
 async def _api(client: httpx.AsyncClient, service: str, method: str, params: dict) -> dict:
@@ -944,6 +957,13 @@ TOOLS = [
     ),
     # ── Medium priority: Clients ───────────────────────────────────────
     Tool(
+        name="yd_direct_accounts_get",
+        description="List Direct cabinets this server can access: the default token plus every "
+                    "login from YD_DIRECT_TOKENS, each verified live via Clients.get. Use the "
+                    "returned login as client_login on other Direct tools.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
         name="yd_clients_get",
         description="Get advertiser account info (settings, balance, bonuses, etc.).",
         inputSchema={
@@ -1013,7 +1033,9 @@ def _augment_schema(tool: Tool) -> Tool:
     if _is_direct(tool.name):
         props.setdefault("client_login", {
             "type": "string",
-            "description": "Optional. Override Client-Login for this call (agency multi-account).",
+            "description": "Optional. Select the Direct cabinet for this call: a login listed in "
+                           "YD_DIRECT_TOKENS uses its own token; any other login is sent as "
+                           "Client-Login (agency sub-client).",
         })
     if CONFIRM and _is_mutating(tool.name):
         props.setdefault("confirm", {
@@ -1156,6 +1178,8 @@ async def _dispatch(name: str, arguments: dict):
                 return await _handle_ad_images_delete(client, arguments)
             elif name == "yd_businesses_get":
                 return await _handle_businesses_get(client, arguments)
+            elif name == "yd_direct_accounts_get":
+                return await _handle_direct_accounts_get(client, arguments)
             elif name == "yd_clients_get":
                 return await _handle_clients_get(client, arguments)
             elif name == "yd_wordstat_top_requests":
@@ -1892,6 +1916,32 @@ async def _handle_businesses_get(client, args):
 
 
 # ── Clients ───────────────────────────────────────────────────────────
+
+async def _handle_direct_accounts_get(client, args):
+    """Probe every configured Direct token with Clients.get (ignores client_login)."""
+    accounts = []
+    for source, token in [("YD_OAUTH_TOKEN", TOKEN)] + list(DIRECT_TOKENS.items()):
+        headers = {"Authorization": f"Bearer {token}", "Accept-Language": "ru",
+                   "Content-Type": "application/json"}
+        if source == "YD_OAUTH_TOKEN" and LOGIN and LOGIN not in DIRECT_TOKENS:
+            headers["Client-Login"] = LOGIN
+        entry = {"configured_as": source}
+        try:
+            resp = await request_with_retry(
+                client, f"{_base_url()}/clients", headers=headers, timeout=60,
+                json_body={"method": "get", "params": {"FieldNames": ["Login", "ClientId", "Currency", "Type"]}})
+            data = resp.json()
+            if "error" in data:
+                entry["error"] = data["error"].get("error_detail") or data["error"].get("error_string")
+            else:
+                c = (data.get("result", {}).get("Clients") or [{}])[0]
+                entry.update({"login": c.get("Login"), "client_id": c.get("ClientId"),
+                              "currency": c.get("Currency"), "type": c.get("Type")})
+        except Exception as e:  # network / non-JSON
+            entry["error"] = str(e)[:200]
+        accounts.append(entry)
+    return _result({"accounts": accounts, "default_login": LOGIN or None})
+
 
 async def _handle_clients_get(client, args):
     params = {

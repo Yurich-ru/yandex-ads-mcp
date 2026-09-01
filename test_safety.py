@@ -19,6 +19,8 @@ os.environ["YD_CONFIRM"] = "true"  # so schemas advertise the confirm flag
 # The fallback checks below assume per-service tokens are NOT set.
 os.environ.pop("YD_METRIKA_TOKEN", None)
 os.environ.pop("YD_AUDIENCE_TOKEN", None)
+# Extra Direct cabinets: one valid entry, one malformed (must be skipped).
+os.environ["YD_DIRECT_TOKENS"] = "e-2:tok-two, broken-entry ,:no-login"
 
 import server  # noqa: E402
 from tools_direct_extra import annotate_partial  # noqa: E402
@@ -75,6 +77,27 @@ check("yd_audience_segments_get not direct (Audience API)",
 print("== per-service token fallback ==")
 check("METRIKA_TOKEN falls back to TOKEN", server.METRIKA_TOKEN == server.TOKEN)
 check("AUDIENCE_TOKEN falls back to TOKEN", server.AUDIENCE_TOKEN == server.TOKEN)
+
+print("== per-login Direct tokens (YD_DIRECT_TOKENS) ==")
+from tools_direct_extra import client_login_var, resolve_direct_auth  # noqa: E402
+check("token map parsed, malformed entries skipped", server.DIRECT_TOKENS == {"e-2": "tok-two"})
+check("no login -> default token, no Client-Login",
+      resolve_direct_auth(server.TOKEN, "") == (server.TOKEN, ""))
+_ctx = client_login_var.set("e-2")
+try:
+    check("mapped login -> its own token, no Client-Login",
+          resolve_direct_auth(server.TOKEN, "") == ("tok-two", ""))
+    check("mapped login: server._headers() has no Client-Login",
+          "Client-Login" not in server._headers() and server._headers()["Authorization"] == "Bearer tok-two")
+finally:
+    client_login_var.reset(_ctx)
+_ctx = client_login_var.set("agency-sub")
+try:
+    check("unmapped login -> default token + Client-Login (agency path)",
+          resolve_direct_auth(server.TOKEN, "") == (server.TOKEN, "agency-sub"))
+finally:
+    client_login_var.reset(_ctx)
+check("yd_direct_accounts_get is read-only", server._is_mutating("yd_direct_accounts_get") is False)
 
 print("== logging default ==")
 check("no log file written by default", server.LOG_FILE == "" and

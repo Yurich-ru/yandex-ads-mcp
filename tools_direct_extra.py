@@ -66,6 +66,38 @@ def iam_expiry(data, now):
 # Per-call Client-Login (agency multi-account). Set by the dispatcher in server.py.
 client_login_var = contextvars.ContextVar("client_login", default="")
 
+# Per-login Direct tokens (YD_DIRECT_TOKENS) for non-agency multi-cabinet setups:
+# separate advertiser accounts that each have their own OAuth token.
+_direct_tokens: dict = {}
+
+
+def set_direct_tokens(mapping: dict):
+    _direct_tokens.clear()
+    _direct_tokens.update(mapping or {})
+
+
+def resolve_direct_auth(default_token: str, default_login: str = ""):
+    """Return (bearer_token, client_login_header) for the current call.
+
+    The effective login is the per-call client_login (contextvar) or YD_LOGIN.
+    A login present in YD_DIRECT_TOKENS selects its own token and sends NO
+    Client-Login header (it is a separate cabinet, not an agency sub-client);
+    any other login keeps the agency behaviour: default token + Client-Login.
+    """
+    login = client_login_var.get("") or default_login
+    if login and login in _direct_tokens:
+        return _direct_tokens[login], ""
+    return default_token, login
+
+
+def direct_headers(default_token: str, default_login: str = "") -> dict:
+    token, login = resolve_direct_auth(default_token, default_login)
+    headers = {"Authorization": f"Bearer {token}", "Accept-Language": "ru",
+               "Content-Type": "application/json"}
+    if login:
+        headers["Client-Login"] = login
+    return headers
+
 # Toggled from server.py via set_log_bodies(); when False, request/response bodies are not logged.
 _LOG_BODIES = False
 
@@ -121,10 +153,7 @@ def _result(data):
 async def _api(client, service, method, params, *, base_url, token, login="", timeout=120, **_kwargs):
     url = f"{base_url}/{service}"
     body = {"method": method, "params": params}
-    headers = {"Authorization": f"Bearer {token}", "Accept-Language": "ru", "Content-Type": "application/json"}
-    eff_login = client_login_var.get("") or login
-    if eff_login:
-        headers["Client-Login"] = eff_login
+    headers = direct_headers(token, login)
     _log_body("EXTRA REQUEST %s %s: %s", url, method, json.dumps(body, ensure_ascii=False)[:2000])
     resp = await request_with_retry(client, url, headers=headers, json_body=body, timeout=timeout)
     log_units(resp)
@@ -139,10 +168,7 @@ async def _api501(client, service, method, params, *, base_url, token, login="",
     """Call via v501 endpoint (for shopping ads, callout linking, etc.)."""
     url = base_url.replace("/v5", "/v501") + f"/{service}"
     body = {"method": method, "params": params}
-    headers = {"Authorization": f"Bearer {token}", "Accept-Language": "ru", "Content-Type": "application/json"}
-    eff_login = client_login_var.get("") or login
-    if eff_login:
-        headers["Client-Login"] = eff_login
+    headers = direct_headers(token, login)
     _log_body("EXTRA v501 REQUEST %s %s: %s", url, method, json.dumps(body, ensure_ascii=False)[:2000])
     resp = await request_with_retry(client, url, headers=headers, json_body=body, timeout=timeout)
     log_units(resp)
