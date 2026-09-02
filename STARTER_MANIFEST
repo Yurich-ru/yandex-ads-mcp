@@ -1,0 +1,53 @@
+# Граница между шаблоном и проектом. Читается скиллом /starter-upgrade.
+#
+#   template: — принадлежит шаблону; обновление заменяет файл целиком.
+#   once:     — копируется при инициализации и дальше живёт в проекте (или удаляется);
+#               обновление никогда его не возвращает и не перезаписывает.
+#   mixed:    — шаблон и проект пишут в один файл; обновление показывает diff,
+#               применять по разделам вручную.
+#   project:  — принадлежит проекту; шаблон его не трогает никогда.
+#
+# Путь с «/» на конце — весь каталог. Всё, что не перечислено, — project.
+#
+# Урок первого прогона (cad, 02.09.2026): deploy.yml, .gitignore и конфиг markdownlint —
+# заготовки, которые проект переписывает целиком под себя (своя сборка, свои исключения).
+# Это once, а не mixed: обновление стартера их не трогает.
+
+template: STARTER_VERSION
+template: STARTER_MANIFEST
+template: CLAUDE.md
+template: .editorconfig
+template: .claude/hooks/
+template: .agents/skills/handoff/
+template: .agents/skills/starter-upgrade/
+template: agent_docs/templates/
+template: agent_docs/adr/README.md
+template: agent_docs/development-history/README.md
+template: agent_docs/guides/archiving-and-temp.md
+template: agent_docs/guides/atomic-documents.md
+template: agent_docs/guides/autodeploy.md
+template: agent_docs/guides/context-management.md
+template: agent_docs/guides/dod.md
+template: agent_docs/guides/environment-setup.md
+template: agent_docs/guides/logging.md
+
+once: agent_docs/setup-checklist.md
+once: agent_docs/snapshot.md
+once: agent_docs/backlog.md
+once: agent_docs/architecture.md
+once: agent_docs/invariants.md
+once: agent_docs/glossary.md
+once: agent_docs/guides/operations.md
+once: .env.example
+once: .markdownlint.json
+once: .github/workflows/markdownlint.yml
+once: .github/workflows/deploy.yml
+once: .gitignore
+
+mixed: AGENTS.md
+mixed: agent_docs/index.md
+mixed: .cursorignore
+
+project: README.md
+project: agent_docs/adr/
+project: agent_docs/development-history/
