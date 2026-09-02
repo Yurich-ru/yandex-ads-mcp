@@ -92,10 +92,50 @@ Webhook стека: UUID лежит в поле `AutoUpdate.Webhook`, полны
 - DNS-запись поддомена и proxy-host + TLS в reverse-proxy (если не автоматизировано отдельно).
 - Значения секретов приложения (ключи интеграций) — в env стека.
 
+## Грабли (стоили сломанных деплоев)
+
+### Symlink в репозитории — стек не задеплоится вообще
+
+Portainer клонирует git-стеки через go-git с файловой системой `NoSymlinkFS`: **любой** symlink
+в репозитории даёт `repository contains a symlink, which is not allowed for security reasons`.
+Отключить нельзя. Классический источник — зеркала скиллов `.claude/skills/<name>`; в стартере они
+поэтому обычные копии каталогов.
+
+Хуже самого отказа — след: клон рвётся посреди checkout, и в `/data/compose/<id>` остаётся `.git`
+(в норме Portainer удаляет его после клона). Дальше **каждый** вебхук падает уже с
+`failed to clone git repository: repository already exists` — даже после того, как symlink из
+репозитория убрали.
+
+Лечение:
+
+1. Убрать symlink из репозитория (зеркала — копиями) и запушить.
+2. На хосте удалить **только** `.git` стека, рабочее дерево оставить:
+
+   ```bash
+   rm -rf /var/lib/docker/volumes/portainer_data/_data/compose/<stack_id>/.git
+   ```
+
+3. Повторно дёрнуть вебхук (`POST <PORTAINER_URL>/api/stacks/webhooks/<uuid>`) или
+   `gh run rerun` деплойного workflow.
+
+Диагностика — в логах Portainer (через ssh обязательно с `timeout`, чтобы не оставить
+осиротевший стрим): `docker logs portainer` → строка `webhook failed to redeploy a stack |
+... stack=<name> stack_id=<id>`.
+
+### «Success» при упавшем вебхуке
+
+`POST` на вебхук возвращает успех до того, как Portainer попробует пересобрать стек. Workflow,
+который останавливается на «вебхук принят», зелёный при полностью сломанном деплое — так пять
+проектов сутки считались задеплоенными. Поэтому пост-деплой гейт (`SSH_CHECK_ENABLED=true`)
+обязателен, и проверять он должен **реально новый стек**: `StartedAt` целевого контейнера позже
+времени вызова вебхука, а не просто «контейнер running».
+
 ## Проверка, что стандарт включён
 
 - [ ] `gh api repos/<owner>/<repo>/actions/variables` показывает `DEPLOY_ENABLED=true`
 - [ ] Тестовый коммит в `main` → `gh run list --workflow deploy.yml` зелёный
 - [ ] На хосте контейнер пересоздан (сравнить `docker ps` / версию схемы), а не только «webhook принят»
 - [ ] `SSH_CHECK_ENABLED=true` — иначе пост-деплой гейта нет и сбой деплоя останется незамеченным
+- [ ] Пост-деплой гейт сверяет `StartedAt` контейнера со временем вебхука, а не только «контейнер running»
+- [ ] В репозитории нет ни одного symlink: `git ls-files -s | awk '$1=="120000"'` — пусто
 - [ ] Раздел «Деплой» в `operations.md` заполнен конкретикой проекта

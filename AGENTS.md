@@ -115,7 +115,8 @@
 ## Project-Local Skills
 
 - Если проекту нужны локальные skills, источник истины: `.agents/skills/<name>/SKILL.md`.
-- Platform mirrors: `.claude/skills/<name>`, `.codex/skills/<name>`, `.cursor/skills/<name>` должны быть symlink на `../../.agents/skills/<name>`.
+- Platform mirrors: `.claude/skills/<name>`, `.codex/skills/<name>`, `.cursor/skills/<name>` — **обычные копии каталога** `.agents/skills/<name>`, не symlink: Portainer не клонирует репозиторий с symlink, и деплой стека падает (`agent_docs/guides/autodeploy.md`, раздел «Грабли»).
+- Плата за копии — расхождение зеркал с источником. После правки любого скилла прогонять `python3 .agents/skills/starter-upgrade/scripts/sync-skill-mirrors.py`; `--check` только проверяет и возвращает ненулевой код.
 - Skill metadata должна показывать ту же slash-команду, которую вызывает пользователь: `name: <command>`, description начинается с `/<command>`, первый H1 — `# /<command>`, `agents/openai.yaml display_name: "/<command>"`.
 - Не создавать новые slash-command файлы; полезные workflows оформлять как skills.
 - Manifest всегда называется `SKILL.md`.

@@ -12,6 +12,13 @@
 # Урок первого прогона (cad, 02.09.2026): deploy.yml, .gitignore и конфиг markdownlint —
 # заготовки, которые проект переписывает целиком под себя (своя сборка, свои исключения).
 # Это once, а не mixed: обновление стартера их не трогает.
+#
+# Зеркала скиллов (.claude/.codex/.cursor/skills/<name>/) — обычные копии каталогов,
+# а не symlink на .agents/skills/<name>: Portainer клонирует git-стеки через go-git
+# с NoSymlinkFS, и любой symlink в репозитории рвёт клон. Поэтому они перечислены
+# как обычные template-каталоги, и /starter-upgrade обновляет их копированием.
+# Проектные (не стартерные) скиллы синхронизировать скриптом
+# .agents/skills/starter-upgrade/scripts/sync-skill-mirrors.py.
 
 template: STARTER_VERSION
 template: STARTER_MANIFEST
@@ -20,6 +27,12 @@ template: .editorconfig
 template: .claude/hooks/
 template: .agents/skills/handoff/
 template: .agents/skills/starter-upgrade/
+template: .claude/skills/handoff/
+template: .claude/skills/starter-upgrade/
+template: .codex/skills/handoff/
+template: .codex/skills/starter-upgrade/
+template: .cursor/skills/handoff/
+template: .cursor/skills/starter-upgrade/
 template: agent_docs/templates/
 template: agent_docs/adr/README.md
 template: agent_docs/development-history/README.md
