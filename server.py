@@ -309,7 +309,7 @@ TOOLS = [
     ),
     Tool(
         name="yd_ads_update",
-        description="Update existing text or responsive ads. Responsive ads support multiple titles, texts, images, and videos.",
+        description="Update existing text or responsive ads. Responsive ads support multiple titles and texts.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -327,7 +327,7 @@ TOOLS = [
                             "ad_image_hash": {"type": "string", "description": "Image hash"},
                             "responsive_ad": {
                                 "type": "object",
-                                "description": "Complete responsive ad asset set. Do not combine with the legacy text ad fields above.",
+                                "description": "Responsive ad title and text set. Do not combine with the legacy text ad fields above.",
                                 "properties": {
                                     "titles": {
                                         "type": "array",
@@ -344,26 +344,13 @@ TOOLS = [
                                         "description": "All ad texts (1-3, max 81 chars each)",
                                     },
                                     "href": {"type": "string", "description": "Landing page URL"},
-                                    "display_url_path": {"type": "string", "description": "Display URL path (max 20 chars)"},
-                                    "sitelink_set_id": {"type": "integer", "description": "Sitelink set ID"},
-                                    "ad_image_hashes": {
-                                        "type": "array",
-                                        "items": {"type": "string"},
-                                        "minItems": 1,
-                                        "maxItems": 5,
-                                        "description": "Image hashes (1-5)",
-                                    },
-                                    "video_extension_ids": {
-                                        "type": "array",
-                                        "items": {"type": "integer"},
-                                        "minItems": 1,
-                                        "maxItems": 6,
-                                        "description": "Video extension IDs (1-6)",
-                                    },
                                     "business_id": {"type": "integer", "description": "Yandex Business profile ID"},
-                                    "erir_ad_description": {"type": "string", "description": "ERIR promoted object description"},
                                 },
                                 "required": ["titles", "texts"],
+                                "anyOf": [
+                                    {"required": ["href"]},
+                                    {"required": ["business_id"]},
+                                ],
                             },
                         },
                         "required": ["id"],
@@ -1463,6 +1450,8 @@ async def _handle_ads_update(client, args):
             legacy_fields = ("title", "title2", "text", "href", "sitelink_set_id", "ad_image_hash")
             if any(field in a for field in legacy_fields):
                 raise ValueError("Use either responsive_ad or legacy text ad fields, not both")
+            if "href" not in responsive and "business_id" not in responsive:
+                raise ValueError("responsive_ad requires href or business_id")
 
             responsive_ad = {
                 "Titles": responsive["titles"],
@@ -1470,18 +1459,8 @@ async def _handle_ads_update(client, args):
             }
             if "href" in responsive:
                 responsive_ad["Href"] = responsive["href"]
-            if "display_url_path" in responsive:
-                responsive_ad["DisplayUrlPath"] = responsive["display_url_path"]
-            if "sitelink_set_id" in responsive:
-                responsive_ad["SitelinkSetId"] = responsive["sitelink_set_id"]
-            if "ad_image_hashes" in responsive:
-                responsive_ad["AdImageHashes"] = {"Items": responsive["ad_image_hashes"]}
-            if "video_extension_ids" in responsive:
-                responsive_ad["VideoExtensionIds"] = {"Items": responsive["video_extension_ids"]}
             if "business_id" in responsive:
                 responsive_ad["BusinessId"] = responsive["business_id"]
-            if "erir_ad_description" in responsive:
-                responsive_ad["ErirAdDescription"] = responsive["erir_ad_description"]
             ads.append({"Id": a["id"], "ResponsiveAd": responsive_ad})
             continue
 
@@ -1515,11 +1494,7 @@ async def _handle_ads_get(client, args):
         "SelectionCriteria": criteria,
         "FieldNames": ["Id", "AdGroupId", "CampaignId", "Status", "State", "Type"],
         "TextAdFieldNames": ["Title", "Title2", "Text", "Href", "Mobile"],
-        "ResponsiveAdFieldNames": [
-            "Titles", "Texts", "Href", "DisplayDomain", "DisplayUrlPath", "AdImages",
-            "SitelinkSetId", "DisplayUrlPathModeration", "SitelinksModeration",
-            "AdExtensions", "VideoExtensions", "PriceExtension", "BusinessId", "ErirAdDescription",
-        ],
+        "ResponsiveAdFieldNames": ["Titles", "Texts", "Href", "BusinessId"],
     }
     data = await _api(client, "ads", "get", params)
     return _result(data.get("result", data))

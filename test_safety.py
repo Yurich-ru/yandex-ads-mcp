@@ -133,6 +133,8 @@ print("== responsive ads ==")
 responsive_schema = tools["yd_ads_update"].inputSchema["properties"]["ads"]["items"]["properties"]["responsive_ad"]
 check("responsive update requires titles and texts", responsive_schema.get("required") == ["titles", "texts"])
 check("responsive update allows up to 7 titles", responsive_schema["properties"]["titles"].get("maxItems") == 7)
+check("responsive update requires href or business_id",
+      responsive_schema.get("anyOf") == [{"required": ["href"]}, {"required": ["business_id"]}])
 
 captured_api_calls = []
 
@@ -151,18 +153,29 @@ try:
             "titles": ["First title", "Second title"],
             "texts": ["Ad text"],
             "href": "https://example.com",
-            "sitelink_set_id": 456,
-            "ad_image_hashes": ["image-hash"],
-            "video_extension_ids": [789],
         },
     }]}))
     responsive_payload = captured_api_calls[-1][2]["Ads"][0]
     check("responsive update uses ResponsiveAd", "ResponsiveAd" in responsive_payload and "TextAd" not in responsive_payload)
     check("responsive update sends all title assets",
           responsive_payload["ResponsiveAd"]["Titles"] == ["First title", "Second title"])
-    check("responsive update wraps image and video arrays",
-          responsive_payload["ResponsiveAd"]["AdImageHashes"] == {"Items": ["image-hash"]} and
-          responsive_payload["ResponsiveAd"]["VideoExtensionIds"] == {"Items": [789]})
+
+    calls_before_conflict = len(captured_api_calls)
+    conflict_rejected = False
+    try:
+        asyncio.run(server._handle_ads_update(None, {"ads": [{
+            "id": 123,
+            "title": "Legacy title",
+            "responsive_ad": {
+                "titles": ["Responsive title"],
+                "texts": ["Ad text"],
+                "href": "https://example.com",
+            },
+        }]}))
+    except ValueError:
+        conflict_rejected = True
+    check("mixed text and responsive fields are rejected before API call",
+          conflict_rejected and len(captured_api_calls) == calls_before_conflict)
 
     asyncio.run(server._handle_ads_get(None, {"ad_ids": [123]}))
     get_params = captured_api_calls[-1][2]
