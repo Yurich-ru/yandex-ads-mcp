@@ -159,6 +159,20 @@ try:
     check("responsive update uses ResponsiveAd", "ResponsiveAd" in responsive_payload and "TextAd" not in responsive_payload)
     check("responsive update sends all title assets",
           responsive_payload["ResponsiveAd"]["Titles"] == ["First title", "Second title"])
+    check("responsive update sends all text assets",
+          responsive_payload["ResponsiveAd"]["Texts"] == ["Ad text"])
+
+    asyncio.run(server._handle_ads_update(None, {"ads": [{
+        "id": 124,
+        "responsive_ad": {
+            "titles": ["Business title"],
+            "texts": ["Business text"],
+            "business_id": 456,
+        },
+    }]}))
+    business_payload = captured_api_calls[-1][2]["Ads"][0]["ResponsiveAd"]
+    check("responsive update supports business profile without href",
+          business_payload.get("BusinessId") == 456 and "Href" not in business_payload)
 
     calls_before_conflict = len(captured_api_calls)
     conflict_rejected = False
@@ -176,6 +190,21 @@ try:
         conflict_rejected = True
     check("mixed text and responsive fields are rejected before API call",
           conflict_rejected and len(captured_api_calls) == calls_before_conflict)
+
+    calls_before_missing_destination = len(captured_api_calls)
+    destination_rejected = False
+    try:
+        asyncio.run(server._handle_ads_update(None, {"ads": [{
+            "id": 123,
+            "responsive_ad": {
+                "titles": ["Responsive title"],
+                "texts": ["Ad text"],
+            },
+        }]}))
+    except ValueError:
+        destination_rejected = True
+    check("responsive update requires destination before API call",
+          destination_rejected and len(captured_api_calls) == calls_before_missing_destination)
 
     asyncio.run(server._handle_ads_get(None, {"ad_ids": [123]}))
     get_params = captured_api_calls[-1][2]
