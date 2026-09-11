@@ -12,6 +12,7 @@ Run: python3 test_safety.py
 """
 import os
 import sys
+import asyncio
 
 # Token must be present for the module to import cleanly under some setups.
 os.environ.setdefault("YD_OAUTH_TOKEN", "test-token")
@@ -117,7 +118,7 @@ check("warnings detected", ps.get("warning_count") == 1)
 check("ok flag false on error", ps.get("ok") is False)
 
 print("== schema augmentation ==")
-tools = {t.name: t for t in __import__("asyncio").run(server.list_tools())}
+tools = {t.name: t for t in asyncio.run(server.list_tools())}
 add_props = tools["yd_campaigns_add"].inputSchema["properties"]
 check("direct tool exposes client_login", "client_login" in add_props)
 check("mutating tool exposes confirm (YD_CONFIRM on)", "confirm" in add_props)
@@ -127,6 +128,49 @@ aud_props = tools["yd_audience_segment_delete"].inputSchema["properties"]
 check("audience tool has no client_login", "client_login" not in aud_props)
 check("mutating audience tool exposes confirm (YD_CONFIRM on)", "confirm" in aud_props)
 check("all audience tools dispatched", len(server._audience_dispatch) == len(server.AUDIENCE_TOOLS))
+
+print("== responsive ads ==")
+responsive_schema = tools["yd_ads_update"].inputSchema["properties"]["ads"]["items"]["properties"]["responsive_ad"]
+check("responsive update requires titles and texts", responsive_schema.get("required") == ["titles", "texts"])
+check("responsive update allows up to 7 titles", responsive_schema["properties"]["titles"].get("maxItems") == 7)
+
+captured_api_calls = []
+
+
+async def capture_api(client, service, method, params):
+    captured_api_calls.append((service, method, params))
+    return {"result": {}}
+
+
+original_api = server._api
+server._api = capture_api
+try:
+    asyncio.run(server._handle_ads_update(None, {"ads": [{
+        "id": 123,
+        "responsive_ad": {
+            "titles": ["First title", "Second title"],
+            "texts": ["Ad text"],
+            "href": "https://example.com",
+            "sitelink_set_id": 456,
+            "ad_image_hashes": ["image-hash"],
+            "video_extension_ids": [789],
+        },
+    }]}))
+    responsive_payload = captured_api_calls[-1][2]["Ads"][0]
+    check("responsive update uses ResponsiveAd", "ResponsiveAd" in responsive_payload and "TextAd" not in responsive_payload)
+    check("responsive update sends all title assets",
+          responsive_payload["ResponsiveAd"]["Titles"] == ["First title", "Second title"])
+    check("responsive update wraps image and video arrays",
+          responsive_payload["ResponsiveAd"]["AdImageHashes"] == {"Items": ["image-hash"]} and
+          responsive_payload["ResponsiveAd"]["VideoExtensionIds"] == {"Items": [789]})
+
+    asyncio.run(server._handle_ads_get(None, {"ad_ids": [123]}))
+    get_params = captured_api_calls[-1][2]
+    check("ads get requests responsive titles and texts",
+          {"Titles", "Texts"}.issubset(get_params["ResponsiveAdFieldNames"]))
+    check("ads get keeps legacy text ad fields", "TextAdFieldNames" in get_params)
+finally:
+    server._api = original_api
 
 print("== IAM expiresAt parsing ==")
 from tools_direct_extra import iam_expiry  # noqa: E402
