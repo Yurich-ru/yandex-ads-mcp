@@ -180,6 +180,14 @@ def _result(data):
 
 # ── Tools ──────────────────────────────────────────────────────────────
 
+AD_ID_SCHEMA = {
+    "anyOf": [
+        {"type": "string", "pattern": "^[0-9]+$"},
+        {"type": "integer"},
+    ],
+    "description": "Ad ID. Use a decimal string for IDs longer than 15 digits to avoid JavaScript precision loss.",
+}
+
 TOOLS = [
     Tool(
         name="yd_campaigns_get",
@@ -318,7 +326,7 @@ TOOLS = [
                     "items": {
                         "type": "object",
                         "properties": {
-                            "id": {"type": "integer", "description": "Ad ID to update"},
+                            "id": AD_ID_SCHEMA,
                             "title": {"type": "string", "description": "New title (max 56 chars)"},
                             "title2": {"type": "string", "description": "New second title (max 30 chars)"},
                             "text": {"type": "string", "description": "New text (max 81 chars)"},
@@ -368,7 +376,7 @@ TOOLS = [
             "properties": {
                 "campaign_ids": {"type": "array", "items": {"type": "integer"}},
                 "ad_group_ids": {"type": "array", "items": {"type": "integer"}},
-                "ad_ids": {"type": "array", "items": {"type": "integer"}},
+                "ad_ids": {"type": "array", "items": AD_ID_SCHEMA},
             },
         },
     ),
@@ -378,7 +386,7 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "ad_ids": {"type": "array", "items": {"type": "integer"}},
+                "ad_ids": {"type": "array", "items": AD_ID_SCHEMA},
                 "action": {"type": "string", "enum": ["moderate", "suspend", "resume", "archive", "unarchive"]},
             },
             "required": ["ad_ids", "action"],
@@ -1443,6 +1451,14 @@ async def _handle_ads_add(client, args):
     return _result(data.get("result", data))
 
 
+def _ad_id(value):
+    if isinstance(value, str):
+        if not value.isdecimal():
+            raise ValueError("Ad ID must be a decimal integer")
+        return int(value)
+    return value
+
+
 async def _handle_ads_update(client, args):
     ads = []
     for a in args["ads"]:
@@ -1461,10 +1477,10 @@ async def _handle_ads_update(client, args):
                 responsive_ad["Href"] = responsive["href"]
             if "business_id" in responsive:
                 responsive_ad["BusinessId"] = responsive["business_id"]
-            ads.append({"Id": a["id"], "ResponsiveAd": responsive_ad})
+            ads.append({"Id": _ad_id(a["id"]), "ResponsiveAd": responsive_ad})
             continue
 
-        ad = {"Id": a["id"], "TextAd": {}}
+        ad = {"Id": _ad_id(a["id"]), "TextAd": {}}
         if title := a.get("title"):
             ad["TextAd"]["Title"] = title
         if title2 := a.get("title2"):
@@ -1489,7 +1505,7 @@ async def _handle_ads_get(client, args):
     if ids := args.get("ad_group_ids"):
         criteria["AdGroupIds"] = ids
     if ids := args.get("ad_ids"):
-        criteria["Ids"] = ids
+        criteria["Ids"] = [_ad_id(value) for value in ids]
     params = {
         "SelectionCriteria": criteria,
         "FieldNames": ["Id", "AdGroupId", "CampaignId", "Status", "State", "Type"],
@@ -1502,7 +1518,7 @@ async def _handle_ads_get(client, args):
 
 async def _handle_ads_action(client, args):
     action = args["action"]
-    params = {"SelectionCriteria": {"Ids": args["ad_ids"]}}
+    params = {"SelectionCriteria": {"Ids": [_ad_id(value) for value in args["ad_ids"]]}}
     data = await _api(client, "ads", action, params)
     return _result(data.get("result", data))
 

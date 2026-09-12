@@ -135,6 +135,13 @@ check("responsive update requires titles and texts", responsive_schema.get("requ
 check("responsive update allows up to 7 titles", responsive_schema["properties"]["titles"].get("maxItems") == 7)
 check("responsive update requires href or business_id",
       responsive_schema.get("anyOf") == [{"required": ["href"]}, {"required": ["business_id"]}])
+ad_id_variants = [{"type": "string", "pattern": "^[0-9]+$"}, {"type": "integer"}]
+check("responsive update accepts decimal string ad IDs",
+      tools["yd_ads_update"].inputSchema["properties"]["ads"]["items"]["properties"]["id"].get("anyOf") == ad_id_variants)
+check("ads get accepts decimal string ad IDs",
+      tools["yd_ads_get"].inputSchema["properties"]["ad_ids"]["items"].get("anyOf") == ad_id_variants)
+check("ads action accepts decimal string ad IDs",
+      tools["yd_ads_action"].inputSchema["properties"]["ad_ids"]["items"].get("anyOf") == ad_id_variants)
 
 captured_api_calls = []
 
@@ -206,11 +213,18 @@ try:
     check("responsive update requires destination before API call",
           destination_rejected and len(captured_api_calls) == calls_before_missing_destination)
 
-    asyncio.run(server._handle_ads_get(None, {"ad_ids": [123]}))
+    large_ad_id = "1921132329195330424"
+    asyncio.run(server._handle_ads_get(None, {"ad_ids": [large_ad_id]}))
     get_params = captured_api_calls[-1][2]
     check("ads get requests responsive titles and texts",
           {"Titles", "Texts"}.issubset(get_params["ResponsiveAdFieldNames"]))
     check("ads get keeps legacy text ad fields", "TextAdFieldNames" in get_params)
+    check("ads get preserves unsafe integer IDs",
+          get_params["SelectionCriteria"]["Ids"] == [1921132329195330424])
+
+    asyncio.run(server._handle_ads_action(None, {"ad_ids": [large_ad_id], "action": "moderate"}))
+    check("ads action preserves unsafe integer IDs",
+          captured_api_calls[-1][2]["SelectionCriteria"]["Ids"] == [1921132329195330424])
 finally:
     server._api = original_api
 
