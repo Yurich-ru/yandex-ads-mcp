@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MCP Server for Yandex Direct API v5, Yandex Metrika API, Yandex Audience API, and Wordstat API.
 
-Provides 151 tools for managing advertising campaigns, audiences, web analytics, and keyword research.
+Provides 152 tools for managing advertising campaigns, audiences, web analytics, and keyword research.
 See README.md for setup instructions.
 """
 
@@ -135,6 +135,20 @@ async def _api(client: httpx.AsyncClient, service: str, method: str, params: dic
     return annotate_partial(data)
 
 
+async def _api501(client: httpx.AsyncClient, service: str, method: str, params: dict) -> dict:
+    """Call Yandex Direct API v501 for objects unavailable through v5."""
+    url = f"{_base_url().replace('/v5', '/v501')}/{service}"
+    body = {"method": method, "params": params}
+    _log_body("REQUEST %s %s: %s", url, method, json.dumps(body, ensure_ascii=False)[:2000])
+    resp = await request_with_retry(client, url, headers=_headers(), json_body=body, timeout=120)
+    log_units(resp)
+    data = resp.json()
+    _log_body("RESPONSE %s: %s", resp.status_code, json.dumps(data, ensure_ascii=False)[:2000])
+    if "error" in data:
+        raise Exception(f"API error {data['error'].get('error_code')}: {data['error'].get('error_detail', data['error'].get('error_string'))}")
+    return annotate_partial(data)
+
+
 # ── Access control ─────────────────────────────────────────────────────
 
 _MUTATING_TOKENS = ("_add", "_create", "_update", "_delete", "_action",
@@ -186,6 +200,34 @@ AD_ID_SCHEMA = {
         {"type": "integer"},
     ],
     "description": "Ad ID. Use a decimal string for IDs longer than 15 digits to avoid JavaScript precision loss.",
+}
+
+AUTOTARGETING_SETTINGS_SCHEMA = {
+    "type": "object",
+    "description": "Autotargeting query categories and brand mention options.",
+    "properties": {
+        "categories": {
+            "type": "object",
+            "properties": {
+                "exact": {"type": "string", "enum": ["YES", "NO"]},
+                "narrow": {"type": "string", "enum": ["YES", "NO"]},
+                "alternative": {"type": "string", "enum": ["YES", "NO"]},
+                "accessory": {"type": "string", "enum": ["YES", "NO"]},
+                "broader": {"type": "string", "enum": ["YES", "NO"]},
+            },
+            "minProperties": 1,
+        },
+        "brand_options": {
+            "type": "object",
+            "properties": {
+                "without_brands": {"type": "string", "enum": ["YES", "NO"]},
+                "with_advertiser_brand": {"type": "string", "enum": ["YES", "NO"]},
+                "with_competitors_brand": {"type": "string", "enum": ["YES", "NO"]},
+            },
+            "minProperties": 1,
+        },
+    },
+    "minProperties": 1,
 }
 
 TOOLS = [
@@ -353,6 +395,7 @@ TOOLS = [
                                     },
                                     "href": {"type": "string", "description": "Landing page URL"},
                                     "business_id": {"type": "integer", "description": "Yandex Business profile ID"},
+                                    "sitelink_set_id": {"type": "integer", "description": "Sitelink set ID"},
                                 },
                                 "required": ["titles", "texts"],
                                 "anyOf": [
@@ -394,7 +437,7 @@ TOOLS = [
     ),
     Tool(
         name="yd_keywords_add",
-        description="Add keywords to ad groups.",
+        description="Add keywords or autotargeting to ad groups.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -404,8 +447,9 @@ TOOLS = [
                         "type": "object",
                         "properties": {
                             "ad_group_id": {"type": "integer"},
-                            "keyword": {"type": "string", "description": "Keyword phrase"},
+                            "keyword": {"type": "string", "description": "Keyword phrase; use ---autotargeting to create autotargeting"},
                             "bid": {"type": "number", "description": "Search bid in rubles (optional)"},
+                            "autotargeting_settings": AUTOTARGETING_SETTINGS_SCHEMA,
                         },
                         "required": ["ad_group_id", "keyword"],
                     },
@@ -415,8 +459,29 @@ TOOLS = [
         },
     ),
     Tool(
+        name="yd_keywords_update",
+        description="Update query categories and brand mention options for existing autotargeting criteria.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "keywords": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "integer", "description": "Autotargeting criterion ID"},
+                            "autotargeting_settings": AUTOTARGETING_SETTINGS_SCHEMA,
+                        },
+                        "required": ["id", "autotargeting_settings"],
+                    },
+                },
+            },
+            "required": ["keywords"],
+        },
+    ),
+    Tool(
         name="yd_keywords_get",
-        description="Get keywords by campaign, ad group, or keyword IDs.",
+        description="Get keywords and autotargeting settings by campaign, ad group, or keyword IDs.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -636,7 +701,15 @@ TOOLS = [
             "properties": {
                 "campaign_ids": {"type": "array", "items": {"type": "integer"}},
                 "ad_group_ids": {"type": "array", "items": {"type": "integer"}},
+                "levels": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["CAMPAIGN", "AD_GROUP"]},
+                    "minItems": 1,
+                    "uniqueItems": True,
+                    "description": "Adjustment levels. Inferred from campaign_ids/ad_group_ids when omitted.",
+                },
             },
+            "anyOf": [{"required": ["campaign_ids"]}, {"required": ["ad_group_ids"]}],
         },
     ),
     Tool(
@@ -1145,6 +1218,8 @@ async def _dispatch(name: str, arguments: dict):
                 return await _handle_ads_action(client, arguments)
             elif name == "yd_keywords_add":
                 return await _handle_keywords_add(client, arguments)
+            elif name == "yd_keywords_update":
+                return await _handle_keywords_update(client, arguments)
             elif name == "yd_keywords_get":
                 return await _handle_keywords_get(client, arguments)
             elif name == "yd_keywords_research":
@@ -1461,8 +1536,10 @@ def _ad_id(value):
 
 async def _handle_ads_update(client, args):
     ads = []
+    uses_responsive_api = False
     for a in args["ads"]:
         if (responsive := a.get("responsive_ad")) is not None:
+            uses_responsive_api = True
             legacy_fields = ("title", "title2", "text", "href", "sitelink_set_id", "ad_image_hash")
             if any(field in a for field in legacy_fields):
                 raise ValueError("Use either responsive_ad or legacy text ad fields, not both")
@@ -1477,6 +1554,8 @@ async def _handle_ads_update(client, args):
                 responsive_ad["Href"] = responsive["href"]
             if "business_id" in responsive:
                 responsive_ad["BusinessId"] = responsive["business_id"]
+            if "sitelink_set_id" in responsive:
+                responsive_ad["SitelinkSetId"] = responsive["sitelink_set_id"]
             ads.append({"Id": _ad_id(a["id"]), "ResponsiveAd": responsive_ad})
             continue
 
@@ -1494,7 +1573,8 @@ async def _handle_ads_update(client, args):
         if img_hash := a.get("ad_image_hash"):
             ad["TextAd"]["AdImageHash"] = img_hash
         ads.append(ad)
-    data = await _api(client, "ads", "update", {"Ads": ads})
+    api = _api501 if uses_responsive_api else _api
+    data = await api(client, "ads", "update", {"Ads": ads})
     return _result(data.get("result", data))
 
 
@@ -1510,9 +1590,9 @@ async def _handle_ads_get(client, args):
         "SelectionCriteria": criteria,
         "FieldNames": ["Id", "AdGroupId", "CampaignId", "Status", "State", "Type"],
         "TextAdFieldNames": ["Title", "Title2", "Text", "Href", "Mobile"],
-        "ResponsiveAdFieldNames": ["Titles", "Texts", "Href", "BusinessId"],
+        "ResponsiveAdFieldNames": ["Titles", "Texts", "Href", "BusinessId", "SitelinkSetId"],
     }
-    data = await _api(client, "ads", "get", params)
+    data = await _api501(client, "ads", "get", params)
     return _result(data.get("result", data))
 
 
@@ -1521,6 +1601,30 @@ async def _handle_ads_action(client, args):
     params = {"SelectionCriteria": {"Ids": [_ad_id(value) for value in args["ad_ids"]]}}
     data = await _api(client, "ads", action, params)
     return _result(data.get("result", data))
+
+
+def _autotargeting_settings_payload(settings):
+    fields = {
+        "categories": ("Categories", {
+            "exact": "Exact",
+            "narrow": "Narrow",
+            "alternative": "Alternative",
+            "accessory": "Accessory",
+            "broader": "Broader",
+        }),
+        "brand_options": ("BrandOptions", {
+            "without_brands": "WithoutBrands",
+            "with_advertiser_brand": "WithAdvertiserBrand",
+            "with_competitors_brand": "WithCompetitorsBrand",
+        }),
+    }
+    payload = {}
+    for source, (target, names) in fields.items():
+        if values := settings.get(source):
+            payload[target] = {names[name]: value for name, value in values.items()}
+    if not payload:
+        raise ValueError("autotargeting_settings must include categories or brand_options")
+    return payload
 
 
 async def _handle_keywords_add(client, args):
@@ -1532,8 +1636,19 @@ async def _handle_keywords_add(client, args):
         }
         if bid := kw.get("bid"):
             item["Bid"] = _rubles_to_micros(bid)
+        if settings := kw.get("autotargeting_settings"):
+            item["AutotargetingSettings"] = _autotargeting_settings_payload(settings)
         keywords.append(item)
     data = await _api(client, "keywords", "add", {"Keywords": keywords})
+    return _result(data.get("result", data))
+
+
+async def _handle_keywords_update(client, args):
+    keywords = [{
+        "Id": kw["id"],
+        "AutotargetingSettings": _autotargeting_settings_payload(kw["autotargeting_settings"]),
+    } for kw in args["keywords"]]
+    data = await _api(client, "keywords", "update", {"Keywords": keywords})
     return _result(data.get("result", data))
 
 
@@ -1548,6 +1663,12 @@ async def _handle_keywords_get(client, args):
     params = {
         "SelectionCriteria": criteria,
         "FieldNames": ["Id", "Keyword", "AdGroupId", "CampaignId", "Status", "State", "Bid"],
+        "AutotargetingSettingsCategoriesFieldNames": [
+            "Exact", "Narrow", "Alternative", "Accessory", "Broader"
+        ],
+        "AutotargetingSettingsBrandOptionsFieldNames": [
+            "WithoutBrands", "WithAdvertiserBrand", "WithCompetitorsBrand"
+        ],
     }
     data = await _api(client, "keywords", "get", params)
     return _result(data.get("result", data))
@@ -1731,11 +1852,35 @@ async def _handle_bid_modifiers_get(client, args):
         criteria["CampaignIds"] = ids
     if ids := args.get("ad_group_ids"):
         criteria["AdGroupIds"] = ids
+    if not criteria:
+        raise ValueError("campaign_ids or ad_group_ids is required")
+
+    levels = args.get("levels")
+    if not levels:
+        levels = []
+        if args.get("campaign_ids"):
+            levels.append("CAMPAIGN")
+        if args.get("ad_group_ids"):
+            levels.append("AD_GROUP")
+    criteria["Levels"] = levels
+
     params = {
         "SelectionCriteria": criteria,
-        "FieldNames": ["Id", "CampaignId", "AdGroupId", "Type",
-                        "MobileAdjustment", "DesktopAdjustment", "TabletAdjustment",
-                        "DemographicsAdjustments", "RegionalAdjustments"],
+        "FieldNames": ["Id", "CampaignId", "AdGroupId", "Level", "Type"],
+        "MobileAdjustmentFieldNames": ["BidModifier", "OperatingSystemType"],
+        "TabletAdjustmentFieldNames": ["BidModifier", "OperatingSystemType"],
+        "DesktopAdjustmentFieldNames": ["BidModifier"],
+        "DesktopOnlyAdjustmentFieldNames": ["BidModifier"],
+        "DemographicsAdjustmentFieldNames": ["Gender", "Age", "BidModifier", "Enabled"],
+        "RetargetingAdjustmentFieldNames": [
+            "RetargetingConditionId", "BidModifier", "Accessible", "Enabled"
+        ],
+        "RegionalAdjustmentFieldNames": ["RegionId", "BidModifier", "Enabled"],
+        "VideoAdjustmentFieldNames": ["BidModifier"],
+        "SmartAdAdjustmentFieldNames": ["BidModifier"],
+        "SerpLayoutAdjustmentFieldNames": ["SerpLayout", "BidModifier", "Enabled"],
+        "IncomeGradeAdjustmentFieldNames": ["Grade", "BidModifier", "Enabled"],
+        "AdGroupAdjustmentFieldNames": ["BidModifier"],
     }
     data = await _api(client, "bidmodifiers", "get", params)
     return _result(data.get("result", data))
