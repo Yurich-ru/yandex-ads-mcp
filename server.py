@@ -99,6 +99,7 @@ from tools_direct_extra import (
     request_with_retry,
     iam_expiry,
     log_units,
+    _api501 as _extra_api501,
 )
 
 set_log_bodies(LOG_BODIES)
@@ -137,16 +138,8 @@ async def _api(client: httpx.AsyncClient, service: str, method: str, params: dic
 
 async def _api501(client: httpx.AsyncClient, service: str, method: str, params: dict) -> dict:
     """Call Yandex Direct API v501 for objects unavailable through v5."""
-    url = f"{_base_url().replace('/v5', '/v501')}/{service}"
-    body = {"method": method, "params": params}
-    _log_body("REQUEST %s %s: %s", url, method, json.dumps(body, ensure_ascii=False)[:2000])
-    resp = await request_with_retry(client, url, headers=_headers(), json_body=body, timeout=120)
-    log_units(resp)
-    data = resp.json()
-    _log_body("RESPONSE %s: %s", resp.status_code, json.dumps(data, ensure_ascii=False)[:2000])
-    if "error" in data:
-        raise Exception(f"API error {data['error'].get('error_code')}: {data['error'].get('error_detail', data['error'].get('error_string'))}")
-    return annotate_partial(data)
+    return await _extra_api501(client, service, method, params,
+                               base_url=_base_url(), token=TOKEN, login=LOGIN)
 
 
 # ── Access control ─────────────────────────────────────────────────────
