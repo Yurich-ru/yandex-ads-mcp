@@ -54,3 +54,5 @@
 | `yd_audience_*` возвращают `403 access_denied` | В OAuth-приложении нет права «Яндекс Аудитории» | Добавить право на oauth.yandex.ru и **перевыпустить** токен |
 | Ретаргетинг на сегмент Аудиторий — ошибка 8800 «Объект не найден» | Директ ждёт `ExternalId = id + 2 000 000 000`, а не сырой id | Передавать `audience_segment_id`, кодировку добавляет инструмент |
 | Второй кабинет Директа не подключается через `Client-Login` | Кабинет самостоятельный (например субклиент eLama), агентского токена нет | `YD_DIRECT_TOKENS=логин:токен`, выбирать через `client_login` |
+| CI на PR внешнего контрибьютора «no checks reported», прогоны в статусе `action_required` | GitHub не запускает workflow первого контрибьютора без ручного одобрения | Одобрить: `gh api -X POST repos/<owner>/<repo>/actions/runs/<id>/approve` (id — из `gh api ".../actions/runs?event=pull_request"`) |
+| `gh run list --branch` → `unknown flag` | В dev-контейнере старый `gh` 2.4.0 (2022) | Статусы CI смотреть через `gh api "repos/<owner>/<repo>/actions/runs?branch=master"` |
