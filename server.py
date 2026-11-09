@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MCP Server for Yandex Direct API v5, Yandex Metrika API, Yandex Audience API, and Wordstat API.
 
-Provides 152 tools for managing advertising campaigns, audiences, web analytics, and keyword research.
+Provides 153 tools for managing advertising campaigns, audiences, web analytics, and keyword research.
 See README.md for setup instructions.
 """
 
@@ -10,6 +10,8 @@ import sys
 import json
 import asyncio
 import logging
+from dataclasses import dataclass, field
+from unicodedata import category
 
 import httpx
 from mcp.server import Server
@@ -52,6 +54,40 @@ def _parse_token_map(raw: str) -> dict:
     return out
 
 
+def _has_control_chars(value: str) -> bool:
+    return any(category(char) == "Cc" for char in value)
+
+
+def _parse_yandex_tokens(raw: str) -> dict[str, str]:
+    """Parse the shared registry without exposing configuration in errors."""
+    tokens: dict[str, str] = {}
+    if not raw.strip() and not _has_control_chars(raw):
+        return tokens
+
+    for position, entry in enumerate(raw.split(","), start=1):
+        login, separator, token = entry.partition(":")
+        login, token = login.strip(), token.strip()
+        if _has_control_chars(entry) or not separator or not login or not token:
+            raise ValueError(f"YANDEX_TOKENS entry {position} must be a login:token pair without control characters.")
+        if login in tokens:
+            raise ValueError(f"YANDEX_TOKENS entry {position} has a duplicate login.")
+        tokens[login] = token
+    return tokens
+
+
+def _validate_yandex_default(login: str, tokens: dict[str, str]) -> str:
+    if _has_control_chars(login):
+        raise ValueError("YANDEX_DEFAULT_LOGIN must not contain control characters.")
+    login = login.strip()
+    if login and login not in tokens:
+        raise ValueError("YANDEX_DEFAULT_LOGIN must match a login in YANDEX_TOKENS.")
+    return login
+
+
+# Validated once at startup, before accepting any tool calls.
+YANDEX_TOKENS: dict[str, str] = {}
+YANDEX_DEFAULT_LOGIN = ""
+
 # Extra Direct cabinets (non-agency multi-account): each login gets its own token.
 # Selected per call via the client_login argument (or YD_LOGIN as default).
 DIRECT_TOKENS = _parse_token_map(os.environ.get("YD_DIRECT_TOKENS", ""))
@@ -79,26 +115,23 @@ if LOG_FILE:
     logger.addHandler(_fh)
 
 
-def _log_body(prefix, *args):
-    """Log request/response bodies only when YD_LOG_BODIES is enabled (verbose)."""
-    if LOG_BODIES:
-        logger.debug(prefix, *args)
-
-
 # ── Extra modules ──────────────────────────────────────────────────────
-from tools_metrika import METRIKA_TOOLS, register_metrika_handlers
-from tools_audience import AUDIENCE_TOOLS, register_audience_handlers
+import tools_direct_extra
+from tools_metrika import BASE_URL as METRIKA_URL, METRIKA_TOOLS, register_metrika_handlers
+from tools_audience import BASE_URL as AUDIENCE_URL, AUDIENCE_TOOLS, register_audience_handlers
 from tools_direct_extra import (
     EXTRA_DIRECT_TOOLS,
     register_extra_direct_handlers,
-    client_login_var,
+    direct_auth_var,
     annotate_partial,
     set_log_bodies,
     set_direct_tokens,
     direct_headers,
+    direct_route_headers,
     request_with_retry,
     iam_expiry,
     log_units,
+    redact_credentials,
     _api501 as _extra_api501,
 )
 
@@ -106,19 +139,68 @@ set_log_bodies(LOG_BODIES)
 set_direct_tokens(DIRECT_TOKENS)
 
 server = Server("yandex-ads")
+_iam_token_cache = {"token": "", "expires": 0}
+
+
+def _credentials():
+    return (TOKEN, METRIKA_TOKEN, AUDIENCE_TOKEN, YC_API_KEY, _iam_token_cache["token"],
+            tools_direct_extra._iam_cache["token"], *DIRECT_TOKENS.values(), *YANDEX_TOKENS.values())
+
+
+class _RedactLogs(logging.Filter):
+    def filter(self, record):
+        credentials = _credentials()
+        if getattr(record, "body_log", False):
+            # The final formatting argument is the body. Mask it before clipping.
+            *args, body = record.args
+            record.args = (*args, redact_credentials(body, credentials)[:2000])
+        record.msg = redact_credentials(record.getMessage(), credentials)
+        record.args = ()
+        if record.exc_info:
+            record.exc_text = redact_credentials(_fmt.formatException(record.exc_info), credentials)
+            record.exc_info = None
+        return True
+
+
+logger.addFilter(_RedactLogs())
+
+
+def _log_body(prefix, *args):
+    if LOG_BODIES:
+        logger.debug(prefix, *args, extra={"body_log": True})
+
+
+def _redact_response(content):
+    credentials = _credentials()
+
+    def redact_json(value):
+        if isinstance(value, str):
+            return redact_credentials(value, credentials)
+        if isinstance(value, list):
+            return [redact_json(element) for element in value]
+        if isinstance(value, dict):
+            return {redact_json(key): redact_json(element) for key, element in value.items()}
+        return value
+
+    for item in content:
+        masked = redact_credentials(item.text, credentials)
+        if masked == item.text:
+            continue
+        try:
+            data = json.loads(item.text)
+        except (ValueError, RecursionError):
+            item.text = masked
+            continue
+        item.text = json.dumps(redact_json(data), indent=2, ensure_ascii=False)
+    return content
 
 
 def _base_url():
     return SANDBOX_URL if USE_SANDBOX else API_URL
 
 
-def _effective_login() -> str:
-    """Per-call Client-Login (multi-account) overrides the global default."""
-    return client_login_var.get("") or LOGIN
-
-
 def _headers():
-    """Bearer + optional Client-Login; a login from YD_DIRECT_TOKENS selects its own token."""
+    """Build headers for the resolved Direct route."""
     return direct_headers(TOKEN, LOGIN)
 
 
@@ -126,11 +208,11 @@ async def _api(client: httpx.AsyncClient, service: str, method: str, params: dic
     """Call Yandex Direct API v5."""
     url = f"{_base_url()}/{service}"
     body = {"method": method, "params": params}
-    _log_body("REQUEST %s %s: %s", url, method, json.dumps(body, ensure_ascii=False)[:2000])
+    _log_body("REQUEST %s %s: %s", url, method, json.dumps(body, ensure_ascii=False))
     resp = await request_with_retry(client, url, headers=_headers(), json_body=body, timeout=120)
     log_units(resp)
     data = resp.json()
-    _log_body("RESPONSE %s: %s", resp.status_code, json.dumps(data, ensure_ascii=False)[:2000])
+    _log_body("RESPONSE %s: %s", resp.status_code, json.dumps(data, ensure_ascii=False))
     if "error" in data:
         raise Exception(f"API error {data['error'].get('error_code')}: {data['error'].get('error_detail', data['error'].get('error_string'))}")
     return annotate_partial(data)
@@ -155,34 +237,97 @@ def _is_mutating(name: str) -> bool:
 
 
 _AUDIENCE_NAMES = frozenset(t.name for t in AUDIENCE_TOOLS)
+_METRIKA_NAMES = frozenset(t.name for t in METRIKA_TOOLS)
+_DIRECT_INVENTORY = "yd_direct_accounts_get"
+_YANDEX_DISCOVERY = "yd_yandex_accounts_get"
+_DISCOVERY_TOOL = Tool(
+    name=_YANDEX_DISCOVERY,
+    description="List configured Yandex accounts and optionally check one account's read access to "
+                "Direct, Metrica, and Audience. Returns service statuses without resource data.",
+    inputSchema={"type": "object", "properties": {
+        "account_login": {"type": "string", "description": "Filter by a login in YANDEX_TOKENS."},
+        "verify": {"type": "boolean", "default": False,
+                   "description": "Check live read access. Requires account_login."},
+    }},
+)
 
 
 def _is_direct(name: str) -> bool:
     """True for Yandex Direct tools (which use Client-Login); Metrika/Wordstat/Audience don't."""
     return (name.startswith("yd_")
+            and name != _YANDEX_DISCOVERY
             and not name.startswith("yd_metrika")
             and not name.startswith("yd_wordstat")
             and name not in _AUDIENCE_NAMES)
 
 
 def _deny(reason: str):
+    reason = redact_credentials(reason, _credentials())
     logger.warning("DENIED: %s", reason)
     return [TextContent(type="text", text=json.dumps({"denied": True, "reason": reason}, ensure_ascii=False))]
 
 
-def _confirm_preview(name: str, arguments: dict, login: str):
+def _confirm_preview(name: str, arguments: dict, login: str, auth: "_ResolvedAuth | None"):
+    account_login = auth.account_login if auth else None
     preview = {
         "confirm_required": True,
         "tool": name,
-        "client_login": login or None,
+        "client_login": None if account_login else login or None,
         "arguments": arguments,
         "note": "Mutating operation and YD_CONFIRM is enabled. Re-call this tool with confirm=true to execute.",
     }
-    return [TextContent(type="text", text=json.dumps(preview, indent=2, ensure_ascii=False))]
+    if account_login:
+        preview["account_login"] = account_login
+        if auth.direct_target_login:
+            preview["direct_target_login"] = auth.direct_target_login
+    return _redact_response(_result(preview))
 
 
 def _result(data):
     return [TextContent(type="text", text=json.dumps(data, indent=2, ensure_ascii=False))]
+
+
+@dataclass(frozen=True)
+class _ResolvedAuth:
+    token: str = field(repr=False)
+    account_login: str | None = None
+    direct_target_login: str = ""
+    client_login_header: str = ""
+
+
+def _supports_account_selection(name: str) -> bool:
+    return ((_is_direct(name) and name != _DIRECT_INVENTORY)
+            or name in _METRIKA_NAMES or name in _AUDIENCE_NAMES)
+
+
+def _resolve_auth(name: str, account_login: str | None, client_login: str | None) -> _ResolvedAuth | None:
+    if not _supports_account_selection(name):
+        return None
+
+    direct = _is_direct(name)
+    selected_login = account_login or (YANDEX_DEFAULT_LOGIN if not (direct and client_login is not None) else "")
+    if selected_login:
+        token = YANDEX_TOKENS.get(selected_login)
+        if token is None and direct and account_login is not None:
+            token = DIRECT_TOKENS.get(selected_login)
+        if token is None:
+            raise ValueError("Unknown account_login for this service.")
+        return _ResolvedAuth(token, selected_login, selected_login if direct else "")
+
+    if direct:
+        login = client_login or LOGIN
+        if login in DIRECT_TOKENS:
+            return _ResolvedAuth(DIRECT_TOKENS[login], direct_target_login=login)
+        return _ResolvedAuth(TOKEN, direct_target_login=login, client_login_header=login)
+    return _ResolvedAuth(METRIKA_TOKEN if name in _METRIKA_NAMES else AUDIENCE_TOKEN)
+
+
+def _has_unmanaged_credential(name: str) -> bool:
+    if name == _DIRECT_INVENTORY:
+        return bool(TOKEN or any(DIRECT_TOKENS.values()))
+    if name.startswith("yd_wordstat"):
+        return bool(YC_API_KEY or TOKEN)
+    return True
 
 
 # ── Tools ──────────────────────────────────────────────────────────────
@@ -1128,7 +1273,7 @@ TOOLS = [
 
 
 def _augment_schema(tool: Tool) -> Tool:
-    """Advertise the cross-cutting optional args (client_login, confirm) on tool schemas."""
+    """Advertise the account selectors and safety controls supported by this tool."""
     schema = json.loads(json.dumps(tool.inputSchema or {"type": "object", "properties": {}}))
     props = schema.setdefault("properties", {})
     if _is_direct(tool.name):
@@ -1138,6 +1283,12 @@ def _augment_schema(tool: Tool) -> Tool:
                            "YD_DIRECT_TOKENS uses its own token; any other login is sent as "
                            "Client-Login (agency sub-client).",
         })
+    if YANDEX_TOKENS and _supports_account_selection(tool.name):
+        props["account_login"] = {
+            "type": "string",
+            "description": "Choose an account by its configured login. Supply either "
+                           "account_login or client_login for a Direct call.",
+        }
     if CONFIRM and _is_mutating(tool.name):
         props.setdefault("confirm", {
             "type": "boolean",
@@ -1148,7 +1299,10 @@ def _augment_schema(tool: Tool) -> Tool:
 
 @server.list_tools()
 async def list_tools():
-    return [_augment_schema(t) for t in (TOOLS + METRIKA_TOOLS + EXTRA_DIRECT_TOOLS + AUDIENCE_TOOLS)]
+    tools = TOOLS + METRIKA_TOOLS + EXTRA_DIRECT_TOOLS + AUDIENCE_TOOLS
+    if YANDEX_TOKENS:
+        tools.append(_DISCOVERY_TOOL)
+    return [_augment_schema(t) for t in tools]
 
 
 def _rubles_to_micros(rubles: float) -> int:
@@ -1161,32 +1315,76 @@ def _rubles_to_micros(rubles: float) -> int:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
     arguments = dict(arguments or {})
-    # Cross-cutting controls (not forwarded to the Yandex API)
-    req_login = arguments.pop("client_login", None)
-    confirm = bool(arguments.pop("confirm", False))
     mutating = _is_mutating(name)
 
     # 1) read-only mode
     if mutating and READONLY:
         return _deny(f"Tool '{name}' is blocked: server runs in READ-ONLY mode (YD_READONLY=true).")
 
-    # 2) multi-account whitelist (Direct tools only — Metrika/Wordstat ignore Client-Login)
-    effective_login = req_login or LOGIN
-    if _is_direct(name) and ALLOWED_LOGINS and effective_login and effective_login not in ALLOWED_LOGINS:
-        return _deny(f"Client-Login '{effective_login}' is not in the YD_ALLOWED_LOGINS whitelist.")
+    if name == _YANDEX_DISCOVERY:
+        if not YANDEX_TOKENS:
+            return _deny("This tool requires a shared registry in YANDEX_TOKENS.")
+        login = arguments.get("account_login")
+        verify = arguments.get("verify", False)
+        if "account_login" in arguments and (not isinstance(login, str) or login not in YANDEX_TOKENS):
+            return _deny("account_login must match a login in YANDEX_TOKENS.")
+        if not isinstance(verify, bool):
+            return _deny("verify must be a boolean.")
+        if verify and login is None:
+            return _deny("Live verification requires account_login.")
+        return _redact_response(await _dispatch(name, {"account_login": login, "verify": verify}, None))
+
+    # Selectors and safety controls stay at the MCP boundary.
+    direct = _is_direct(name)
+    has_account = "account_login" in arguments
+    has_client = "client_login" in arguments
+    account_login = arguments.pop("account_login", None)
+    client_login = arguments.pop("client_login", None)
+    confirm = bool(arguments.pop("confirm", False))
+    if has_account:
+        if not YANDEX_TOKENS or not _supports_account_selection(name):
+            return _deny("This tool does not support account_login with the current configuration.")
+        if direct and has_client:
+            return _deny("Supply either account_login or client_login, not both.")
+        if (not isinstance(account_login, str) or not account_login.strip()
+                or any(category(char) == "Cc" for char in account_login)):
+            return _deny("account_login must be a nonempty login without control characters.")
+    if direct and client_login is not None and not isinstance(client_login, str):
+        return _deny("client_login must be a string.")
+    # Explicit null/empty legacy selectors fall back to YD_LOGIN, not the shared default.
+    if direct and has_client and client_login is None:
+        client_login = ""
+
+    try:
+        auth = _resolve_auth(name, account_login, client_login)
+    except ValueError as exc:
+        return _deny(str(exc))
+
+    # Check the effective cabinet even for a route without a Client-Login header.
+    effective_login = auth.direct_target_login if direct and auth else client_login or LOGIN
+    if (direct and name != _DIRECT_INVENTORY and ALLOWED_LOGINS and effective_login
+            and effective_login not in ALLOWED_LOGINS):
+        return _deny("The selected Direct login is not in the YD_ALLOWED_LOGINS whitelist.")
+
+    has_credential = bool(auth.token) if auth else _has_unmanaged_credential(name)
+    if YANDEX_TOKENS and not has_credential:
+        return _result({"error": "No credential configured for this tool. Check the service's environment settings."})
 
     # 3) confirm gate
     if mutating and CONFIRM and not confirm:
-        return _confirm_preview(name, arguments, effective_login)
+        return _confirm_preview(name, arguments, effective_login, auth)
 
-    ctx_token = client_login_var.set(req_login or "")
+    direct_auth = (auth.token, auth.client_login_header) if direct and auth else None
+    ctx_token = direct_auth_var.set(direct_auth)
     try:
-        return await _dispatch(name, arguments)
+        return _redact_response(await _dispatch(name, arguments, auth))
     finally:
-        client_login_var.reset(ctx_token)
+        direct_auth_var.reset(ctx_token)
 
 
-async def _dispatch(name: str, arguments: dict):
+async def _dispatch(name: str, arguments: dict, auth: _ResolvedAuth | None):
+    if name == _YANDEX_DISCOVERY:
+        return await _handle_yandex_accounts_get(arguments)
     async with httpx.AsyncClient() as client:
         try:
             if name == "yd_campaigns_get":
@@ -1296,14 +1494,18 @@ async def _dispatch(name: str, arguments: dict):
             elif name in _extra_dispatch:
                 return await _extra_dispatch[name](client, arguments, _extra_config)
             elif name in _metrika_dispatch:
-                return await _metrika_dispatch[name](client, arguments)
+                return await _metrika_dispatch[name](client, arguments, auth.token)
             elif name in _audience_dispatch:
-                return await _audience_dispatch[name](client, arguments)
+                return await _audience_dispatch[name](client, arguments, auth.token)
             else:
                 return _result({"error": f"Unknown tool: {name}"})
         except Exception as e:
-            logger.exception("Tool %s failed", name)
-            return [TextContent(type="text", text=f"Error: {e}")]
+            if LOG_BODIES:
+                logger.exception("Tool %s failed", name)
+            else:
+                logger.error("Tool %s failed (%s)", name, type(e).__name__)
+            detail = redact_credentials(str(e), _credentials())[:2000]
+            return [TextContent(type="text", text=f"Error: {detail}")]
 
 
 async def _handle_campaigns_get(client, args):
@@ -2118,13 +2320,15 @@ async def _handle_businesses_get(client, args):
 # ── Clients ───────────────────────────────────────────────────────────
 
 async def _handle_direct_accounts_get(client, args):
-    """Probe every configured Direct token with Clients.get (ignores client_login)."""
+    """Probe eligible legacy Direct credentials with Clients.get."""
     accounts = []
-    for source, token in [("YD_OAUTH_TOKEN", TOKEN)] + list(DIRECT_TOKENS.items()):
-        headers = {"Authorization": f"Bearer {token}", "Accept-Language": "ru",
-                   "Content-Type": "application/json"}
-        if source == "YD_OAUTH_TOKEN" and LOGIN and LOGIN not in DIRECT_TOKENS:
-            headers["Client-Login"] = LOGIN
+    agency_login = LOGIN if LOGIN not in DIRECT_TOKENS else ""
+    candidates = [("YD_OAUTH_TOKEN", TOKEN, agency_login, agency_login)]
+    candidates.extend((login, token, login, "") for login, token in DIRECT_TOKENS.items())
+    for source, token, target, client_header in candidates:
+        if not token or (ALLOWED_LOGINS and target not in ALLOWED_LOGINS):
+            continue
+        headers = direct_route_headers(token, client_header)
         entry = {"configured_as": source}
         try:
             resp = await request_with_retry(
@@ -2138,9 +2342,84 @@ async def _handle_direct_accounts_get(client, args):
                 entry.update({"login": c.get("Login"), "client_id": c.get("ClientId"),
                               "currency": c.get("Currency"), "type": c.get("Type")})
         except Exception as e:  # network / non-JSON
-            entry["error"] = str(e)[:200]
+            entry["error"] = redact_credentials(str(e), _credentials())[:200]
         accounts.append(entry)
     return _result({"accounts": accounts, "default_login": LOGIN or None})
+
+
+_DISCOVERY_TIMEOUT = 5.0
+_DISCOVERY_LIST_KEYS = {"direct": "Clients", "metrika": "counters", "audience": "segments"}
+# Direct's v5 error reference separates these access errors from temporary server errors.
+_DIRECT_ACCESS_ERRORS = (53, 54, 58, 513, 3000, 3001)
+
+
+async def _probe_service(client, service, method, url, **kwargs):
+    try:
+        response = await client.request(method, url, **kwargs)
+        if response.status_code in (401, 403):
+            return "access_denied"
+        if response.status_code != 200:
+            return "unavailable"
+        data = response.json()
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, RecursionError):
+        return "unavailable"
+
+    if not isinstance(data, dict):
+        return "unavailable"
+    if service == "direct":
+        error = data.get("error")
+        if isinstance(error, dict) and error.get("error_code") in _DIRECT_ACCESS_ERRORS:
+            return "access_denied"
+        if "error" in data:
+            return "unavailable"
+        data = data.get("result")
+    elif data.get("error") or data.get("errors"):
+        return "unavailable"
+    items = data.get(_DISCOVERY_LIST_KEYS[service]) if isinstance(data, dict) else None
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        return "unavailable"
+    if service == "direct" and not all(
+            isinstance(item.get("Login"), str) and item["Login"].strip() for item in items):
+        return "unavailable"
+    return "read_verified"
+
+
+async def _verify_yandex_services(login):
+    token = YANDEX_TOKENS[login]
+    oauth = {"Authorization": f"OAuth {token}"}
+    states = dict.fromkeys(_DISCOVERY_LIST_KEYS, "not_checked")
+    async with httpx.AsyncClient(timeout=_DISCOVERY_TIMEOUT, follow_redirects=False) as client:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _DISCOVERY_TIMEOUT
+        probes = {
+            "metrika": asyncio.create_task(_probe_service(
+                client, "metrika", "GET", f"{METRIKA_URL}/management/v1/counters", headers=oauth)),
+            "audience": asyncio.create_task(_probe_service(
+                client, "audience", "GET", f"{AUDIENCE_URL}/segments", headers=oauth)),
+        }
+        if not ALLOWED_LOGINS or login in ALLOWED_LOGINS:
+            probes["direct"] = asyncio.create_task(_probe_service(
+                client, "direct", "POST", f"{_base_url()}/clients", headers=direct_route_headers(token),
+                json={"method": "get", "params": {"FieldNames": ["Login"]}}))
+        try:
+            completed, _ = await asyncio.wait(probes.values(), timeout=max(0, deadline - loop.time()))
+        finally:
+            pending = [task for task in probes.values() if not task.done()]
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*probes.values(), return_exceptions=True)
+        for service, task in probes.items():
+            states[service] = task.result() if task in completed else "unavailable"
+    return states
+
+
+async def _handle_yandex_accounts_get(args):
+    login = args["account_login"]
+    logins = [login] if login is not None else YANDEX_TOKENS
+    states = await _verify_yandex_services(login) if args["verify"] else dict.fromkeys(
+        _DISCOVERY_LIST_KEYS, "not_checked")
+    return _result({"default_login": YANDEX_DEFAULT_LOGIN or None, "accounts": [
+        {"account_login": account, "services": states} for account in logins]})
 
 
 async def _handle_clients_get(client, args):
@@ -2154,9 +2433,6 @@ async def _handle_clients_get(client, args):
 
 
 # ── Wordstat API ──────────────────────────────────────────────────────
-
-_iam_token_cache = {"token": "", "expires": 0}
-
 
 async def _get_iam_token(client: httpx.AsyncClient) -> str:
     """Get IAM token from OAuth, with caching (tokens expire in ~12h)."""
@@ -2190,15 +2466,16 @@ async def _wordstat_request(client: httpx.AsyncClient, endpoint: str, body: dict
         "Authorization": auth,
         "Content-Type": "application/json",
     }
-    _log_body("WORDSTAT REQUEST %s: %s", url, json.dumps(body, ensure_ascii=False)[:2000])
+    _log_body("WORDSTAT REQUEST %s: %s", url, json.dumps(body, ensure_ascii=False))
     resp = await client.post(url, headers=headers, json=body, timeout=60)
-    _log_body("WORDSTAT RESPONSE %s: %s", resp.status_code, resp.text[:2000])
+    detail = redact_credentials(resp.text, (auth.split(" ", 1)[1],))
+    _log_body("WORDSTAT RESPONSE %s: %s", resp.status_code, detail)
     if resp.status_code == 429:
         raise Exception(f"Wordstat rate limit exceeded (429). Retry later.")
     if resp.status_code == 503:
         raise Exception(f"Wordstat global quota exceeded (503).")
     if resp.status_code != 200:
-        raise Exception(f"Wordstat error {resp.status_code}: {resp.text[:500]}")
+        raise Exception(f"Wordstat error {resp.status_code}: {detail}")
     return resp.json()
 
 
@@ -2261,10 +2538,10 @@ async def _handle_wordstat_regions_tree(client, args):
 # ── Register extra modules ─────────────────────────────────────────────
 
 _metrika_dispatch = {}
-register_metrika_handlers(_metrika_dispatch, METRIKA_TOKEN)
+register_metrika_handlers(_metrika_dispatch)
 
 _audience_dispatch = {}
-register_audience_handlers(_audience_dispatch, AUDIENCE_TOKEN)
+register_audience_handlers(_audience_dispatch)
 
 _extra_dispatch = {}
 register_extra_direct_handlers(_extra_dispatch)
@@ -2278,11 +2555,19 @@ _extra_config = {
 
 
 async def main():
-    if not TOKEN:
+    global YANDEX_TOKENS, YANDEX_DEFAULT_LOGIN
+    try:
+        tokens = _parse_yandex_tokens(os.environ.get("YANDEX_TOKENS", ""))
+        default_login = _validate_yandex_default(os.environ.get("YANDEX_DEFAULT_LOGIN", ""), tokens)
+    except ValueError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
+    if not TOKEN and not tokens:
         logger.error("YD_OAUTH_TOKEN environment variable is required")
         sys.exit(1)
+    YANDEX_TOKENS, YANDEX_DEFAULT_LOGIN = tokens, default_login
     logger.info("Starting Yandex Ads MCP server (sandbox=%s, tools=%d)",
-                USE_SANDBOX, len(TOOLS) + len(METRIKA_TOOLS) + len(EXTRA_DIRECT_TOOLS) + len(AUDIENCE_TOOLS))
+                USE_SANDBOX, len(await list_tools()))
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 

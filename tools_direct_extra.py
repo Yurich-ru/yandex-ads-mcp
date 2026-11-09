@@ -13,6 +13,16 @@ from mcp.types import Tool, TextContent
 
 logger = logging.getLogger("yandex-ads-mcp")
 
+
+def redact_credentials(text, credentials):
+    secrets = {form for token in credentials if token for form in (
+        token, json.dumps(token, ensure_ascii=False)[1:-1], json.dumps(token)[1:-1])}
+    if not secrets:
+        return text
+    pattern = "|".join(re.escape(secret) for secret in sorted(secrets, key=len, reverse=True))
+    return re.sub(pattern, "[redacted]", text)
+
+
 # Transient HTTP statuses worth retrying with backoff.
 _RETRY_STATUS = (429, 500, 502, 503, 504)
 
@@ -63,7 +73,10 @@ def iam_expiry(data, now):
             logger.debug("Could not parse IAM expiresAt=%r, using 11h fallback", exp)
     return now + 11 * 3600
 
-# Per-call Client-Login (agency multi-account). Set by the dispatcher in server.py.
+# The MCP boundary supplies the selected token and optional agency header together.
+direct_auth_var = contextvars.ContextVar("direct_auth", default=None)
+
+# Fallback for direct calls to the API helpers outside MCP dispatch.
 client_login_var = contextvars.ContextVar("client_login", default="")
 
 # Per-login Direct tokens (YD_DIRECT_TOKENS) for non-agency multi-cabinet setups:
@@ -84,6 +97,9 @@ def resolve_direct_auth(default_token: str, default_login: str = ""):
     Client-Login header (it is a separate cabinet, not an agency sub-client);
     any other login keeps the agency behaviour: default token + Client-Login.
     """
+    resolved = direct_auth_var.get()
+    if resolved is not None:
+        return resolved
     login = client_login_var.get("") or default_login
     if login and login in _direct_tokens:
         return _direct_tokens[login], ""
@@ -92,6 +108,10 @@ def resolve_direct_auth(default_token: str, default_login: str = ""):
 
 def direct_headers(default_token: str, default_login: str = "") -> dict:
     token, login = resolve_direct_auth(default_token, default_login)
+    return direct_route_headers(token, login)
+
+
+def direct_route_headers(token: str, login: str = "") -> dict:
     headers = {"Authorization": f"Bearer {token}", "Accept-Language": "ru",
                "Content-Type": "application/json"}
     if login:
@@ -109,7 +129,7 @@ def set_log_bodies(enabled: bool):
 
 def _log_body(prefix, *args):
     if _LOG_BODIES:
-        logger.debug(prefix, *args)
+        logger.debug(prefix, *args, extra={"body_log": True})
 
 
 def annotate_partial(data):
@@ -154,11 +174,11 @@ async def _api(client, service, method, params, *, base_url, token, login="", ti
     url = f"{base_url}/{service}"
     body = {"method": method, "params": params}
     headers = direct_headers(token, login)
-    _log_body("EXTRA REQUEST %s %s: %s", url, method, json.dumps(body, ensure_ascii=False)[:2000])
+    _log_body("EXTRA REQUEST %s %s: %s", url, method, json.dumps(body, ensure_ascii=False))
     resp = await request_with_retry(client, url, headers=headers, json_body=body, timeout=timeout)
     log_units(resp)
     data = resp.json()
-    _log_body("EXTRA RESPONSE %s: %s", resp.status_code, json.dumps(data, ensure_ascii=False)[:2000])
+    _log_body("EXTRA RESPONSE %s: %s", resp.status_code, json.dumps(data, ensure_ascii=False))
     if "error" in data:
         raise Exception(f"API error {data['error'].get('error_code')}: {data['error'].get('error_detail', data['error'].get('error_string'))}")
     return annotate_partial(data)
@@ -169,11 +189,11 @@ async def _api501(client, service, method, params, *, base_url, token, login="",
     url = base_url.replace("/v5", "/v501") + f"/{service}"
     body = {"method": method, "params": params}
     headers = direct_headers(token, login)
-    _log_body("EXTRA v501 REQUEST %s %s: %s", url, method, json.dumps(body, ensure_ascii=False)[:2000])
+    _log_body("EXTRA v501 REQUEST %s %s: %s", url, method, json.dumps(body, ensure_ascii=False))
     resp = await request_with_retry(client, url, headers=headers, json_body=body, timeout=timeout)
     log_units(resp)
     data = resp.json()
-    _log_body("EXTRA v501 RESPONSE %s: %s", resp.status_code, json.dumps(data, ensure_ascii=False)[:2000])
+    _log_body("EXTRA v501 RESPONSE %s: %s", resp.status_code, json.dumps(data, ensure_ascii=False))
     if "error" in data:
         raise Exception(f"API error {data['error'].get('error_code')}: {data['error'].get('error_detail', data['error'].get('error_string'))}")
     return annotate_partial(data)
@@ -748,7 +768,8 @@ async def _handle_wordstat_user_info(client, args, config):
     body = {"folderId": folder_id}
     resp = await client.post(url, headers=headers, json=body, timeout=30)
     if resp.status_code != 200:
-        raise Exception(f"Wordstat userInfo error {resp.status_code}: {resp.text[:500]}")
+        detail = redact_credentials(resp.text, (auth.split(" ", 1)[1],))
+        raise Exception(f"Wordstat userInfo error {resp.status_code}: {detail}")
     return _result(resp.json())
 
 

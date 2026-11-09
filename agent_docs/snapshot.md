@@ -7,10 +7,18 @@
 > история живёт в `development-history/`.
 
 **Статус:** стабильный релиз 1.3.0; стартер инициализирован
-**Последнее обновление:** 2026-10-04
+**Последнее обновление:** 2026-11-09
 
 ## Что сделано
 
+- 2026-11-06: the read-only legacy agency Direct check passed. The request used `YD_OAUTH_TOKEN` and `Client-Login`. Direct returned the configured advertiser login with a ClientId. [Agency smoke result](development-history/2026-11-06-2052-legacy-agency-smoke-pass.md)
+- 2026-11-06: read-only agency and Audience smoke tests confirmed the expected segment for registry entry 1. The agency request used the intended token and header, but Direct returned error 8800. [Smoke results](development-history/2026-11-06-2100-agency-audience-smoke.md)
+- 2026-11-06: fixed both OAuth review defects. An explicit empty legacy selector retains `YD_LOGIN` routing, and Direct discovery rejects malformed nonempty Login entries. Corrected `.env.example` and added frozen pre-change schema fingerprints. All 286 offline checks passed. [Review fixes](development-history/2026-11-06-2042-yandex-oauth-review-fixes.md)
+- 2026-11-06: verified the privately supplied expected Metrica counter through all three registry routes. Entries 2/3 returned the matching ID with edit access; entry 1 returned 403. Selected-token headers matched in every case. This establishes expected-resource routing and an account access difference, not read-only OAuth grants. [Counter smoke results](development-history/2026-11-06-2024-yandex-oauth-counter-smoke.md)
+- 2026-11-06: ran authorized read-only smoke checks using local `.env`. All three Direct registry routes matched configured logins and separately read ClientIds; all accounts are SUBCLIENT. Metrica reads succeeded (edit/own permissions); Audience succeeded for two entries and returned 403 for one. Legacy agency and limited-permission resource acceptance remain unverified. [Live smoke results](development-history/2026-11-06-2023-yandex-oauth-live-smoke.md)
+- 2026-11-06: final OAuth diff review found one stale configuration comment in `.env.example:28`; no additional routing defect was identified in the examined paths. Fresh offline run passed all 261 checks and `git diff --check` passed. Live identity/resource checks remain blocked on controlled credentials and expected identities. [Final review and smoke matrix](development-history/2026-11-06-2018-yandex-oauth-final-review.md)
+- 2026-11-06: Shared OAuth Tasks 1–4 are implemented. Legacy Direct inventory enforces the allowlist per probe. `yd_yandex_accounts_get` lists configured accounts offline and can verify one account's read access under a shared deadline. All 261 offline checks passed. [Transport checks](development-history/2026-11-06-2008-yandex-oauth-http-routes.md) · [Discovery](development-history/2026-11-06-2014-yandex-oauth-service-discovery.md)
+- 2026-11-06: revised the shared OAuth plan to preserve the discovery filter, keep legacy-only schemas, and bound live verification to three requests and a shared five-second deadline. Earlier setup checks are complete and the one-time checklist was removed. [Plan review follow-up](development-history/2026-11-06-1900-yandex-oauth-plan-revisions.md)
 - 02–04.10.2026: обнаружена заготовка будущего PR в форке @Tahionnn (ветка
   `feat/ad-images-file-path`: фичи file_path/url для `yd_ad_images_add` + переезд на
   uv/src-layout/Docker); владелец оставил [комментарий-приглашение](https://github.com/Tahionnn/yandex-ads-mcp/commit/152dd935f387f8c662974aa1c2d52ec18b054001#commitcomment-203096506)
@@ -45,7 +53,7 @@
 
 ## Известные проблемы
 
-- Нет известных.
+- The original OAuth review findings are resolved. The plan now distinguishes the public MCP string schema from the internal handler's `None` handling. [Follow-up verification](development-history/2026-11-06-2045-yandex-oauth-fix-verification.md)
 
 ## Тупики
 
@@ -54,10 +62,11 @@
 
 ## Не проверено
 
+- A CLIENT-type standalone Direct account remains unverified. The successful Metrica counter reads reported edit access. [Counter smoke results](development-history/2026-11-06-2024-yandex-oauth-counter-smoke.md)
 - `deploy.yml` из стартера намеренно не создан: это MCP-пакет без сервиса и Portainer-стека,
   деплоя нет. Если появится сервисная обёртка — включать по `agent_docs/guides/autodeploy.md`.
-- Хуки `state-freshness.sh` и `handoff-nudge.sh` скопированы, но не подключены
-  в `.claude/settings.json` (шаг 5a чек-листа) и ни разу не запускались.
+- Хуки `state-freshness.sh` и `handoff-nudge.sh` оставлены выключенными; подключаются
+  осознанно по [гайду](guides/context-management.md).
 - Стартовые инварианты в `agent_docs/invariants.md` переписаны под проект по README
   и `test_safety.py`; владелец их не подтверждал.
 - Рутина-дозор не видит ответы на комментарий в чужом форке (GitHub API для сторонних
@@ -66,4 +75,4 @@
 
 ## Следующие шаги
 
-- Пройти оставшиеся пункты `agent_docs/setup-checklist.md` (окружение, хуки, README) и удалить его.
+- Complete the standalone Direct CLIENT check with an appropriate credential and independently expected identity. [Smoke matrix](development-history/2026-11-06-2018-yandex-oauth-final-review.md)

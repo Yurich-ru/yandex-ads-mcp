@@ -4,7 +4,8 @@
 
 Один Python-процесс, говорящий с AI-ассистентом по stdio-протоколу MCP и с четырьмя API
 Яндекса по HTTPS. Состояния между вызовами нет, кроме кэша IAM-токена для Wordstat.
-152 инструмента: Директ 86, Метрика 43, Аудитории 23, Wordstat 5.
+152 инструмента (Директ 81, Метрика 43, Аудитории 23, Wordstat 5) и проверка доступа к сервисам
+для конфигураций с `YANDEX_TOKENS`.
 
 ## Контекст
 
@@ -16,26 +17,31 @@
 
 ## Ключевые компоненты
 
-- `server.py` — конфиг из env (`_env_bool`, карта токенов `YD_DIRECT_TOKENS`), защитная обвязка
-  (read-only, confirm, `YD_ALLOWED_LOGINS`, `client_login` через `contextvars`, retry/backoff,
+- `server.py` — конфиг из env (`YANDEX_TOKENS`, `YD_DIRECT_TOKENS`), защитная обвязка
+  (read-only, confirm, `YD_ALLOWED_LOGINS`, маршруты Директа через `contextvars`, retry/backoff,
   учёт очков `Units`), инструменты Директа и Wordstat, регистрация модулей, точка входа `main_sync`.
 - `tools_direct_extra.py` — дополнительные инструменты Директа (ключевые фразы, ретаргетинг,
   аудитории и пр.) и `annotate_partial()` — разбор per-item ошибок в `_partial_success`.
 - `tools_metrika.py` — инструменты Метрики (`METRIKA_TOOLS`, `register_metrika_handlers`).
 - `tools_audience.py` — инструменты Аудиторий (`AUDIENCE_TOOLS`, `register_audience_handlers`).
-- `test_safety.py` — офлайн-проверка классификации инструментов и защитных режимов.
+- `test_safety.py` — офлайн-проверки схем, защитных режимов, маршрутов HTTPX и проверки доступа.
 - Project-local skills source: `.agents/skills/<name>/SKILL.md`.
 - Platform skill mirrors: `.claude/skills/`, `.codex/skills/`, `.cursor/skills/`.
 
 ## Потоки данных
 
-1. Ассистент вызывает инструмент → `server.py` проверяет режимы (`YD_READONLY` блокирует
-   мутацию до сети; `YD_CONFIRM` без `confirm=true` возвращает превью).
-2. Выбирается кабинет: логин из `YD_DIRECT_TOKENS` → его токен без `Client-Login`; иначе
-   основной токен + заголовок `Client-Login` (агентский путь), с проверкой `YD_ALLOWED_LOGINS`.
-3. HTTP-вызов с retry на 429/5xx; ответ Директа проходит через `annotate_partial()`.
-4. Результат возвращается ассистенту как текст JSON; тела запросов логируются только при
-   `YD_LOG_BODIES=true`.
+1. `YD_READONLY` блокирует мутации. Сервер выбирает токен один раз на вызов, отдельно от
+   целевого логина Директа и заголовка `Client-Login`. После `YD_ALLOWED_LOGINS` применяется
+   `YD_CONFIRM`. У `yd_direct_accounts_get` белый список применяется к каждому запросу.
+2. Директ v5, v501 и Reports используют токен и заголовок из контекста вызова. Метрика и
+   Аудитории получают токен аргументом обработчика. Wordstat использует ключ Yandex Cloud или
+   прежний обмен OAuth на IAM.
+3. Обычные JSON-вызовы Директа повторяются при 429/5xx, а частичные ошибки отмечаются через
+   `annotate_partial()`. Сервер маскирует токены в результатах и диагностике. Тела запросов
+   логируются только при `YD_LOG_BODIES=true`.
+4. `yd_yandex_accounts_get` доступен при `YANDEX_TOKENS`. Список настроенных аккаунтов не
+   требует HTTP. Проверка одного аккаунта выполняет до трёх параллельных запросов с единым
+   сроком в пять секунд. Просроченные запросы отменяются, завершённые сохраняют свой статус.
 
 ## Технологии и зависимости
 

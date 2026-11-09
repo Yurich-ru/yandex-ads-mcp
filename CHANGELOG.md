@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Explicit empty/null legacy Direct selectors preserve `YD_LOGIN` routing; discovery rejects nonempty Direct results without valid logins.
+- Общий список аккаунтов для Директа, Метрики и Аудиторий с выбором аккаунта на уровне вызова.
+- `yd_yandex_accounts_get` перечисляет настроенные аккаунты и по запросу проверяет доступ на чтение.
+- `yd_direct_accounts_get` применяет `YD_ALLOWED_LOGINS` к каждому запросу. Сервер маскирует токены в результатах и диагностике.
+
 ## 1.3.0 — 2026-09-14
 
 Внешний вклад: [@sev222](https://github.com/sev222), PR [#2](https://github.com/Yurich-ru/yandex-ads-mcp/pull/2). Спасибо!

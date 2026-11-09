@@ -34,12 +34,12 @@ async def _audience_api(client, method, path, token, params=None, body=None, fil
     except ValueError:
         data = None
     if resp.status_code >= 400 or (isinstance(data, dict) and data.get("errors")):
-        detail = json.dumps(data, ensure_ascii=False)[:500] if data else resp.text[:500]
+        detail = json.dumps(data, ensure_ascii=False) if data else resp.text
         hint = ""
         if resp.status_code == 403:
             hint = (" Hint: the OAuth app must have the Yandex Audience permission "
                     "(re-issue the token after adding it at https://oauth.yandex.ru/); "
-                    "for multi-account setups set YD_AUDIENCE_TOKEN.")
+                    "check the selected account in YANDEX_TOKENS or the legacy YD_AUDIENCE_TOKEN setting.")
         raise Exception(f"Audience API error {resp.status_code}: {detail}{hint}")
     return data
 
@@ -205,16 +205,16 @@ AUDIENCE_TOOLS = [
 
 # ── Handler registration ──────────────────────────────────────────────
 
-def register_audience_handlers(dispatch: dict, token: str):
+def register_audience_handlers(dispatch: dict):
     """Register all Audience tool handlers into dispatch dict."""
 
     # ── SEGMENTS ─────────────────────────────────────────────────────
 
-    async def segments_get(client, args, _t=token):
+    async def segments_get(client, args, _t):
         params = {"pixel": args["pixel"]} if args.get("pixel") else None
         return _result(await _audience_api(client, "get", "/segments", _t, params=params))
 
-    async def segment_upload(client, args, _t=token):
+    async def segment_upload(client, args, _t):
         if args.get("content"):
             payload = args["content"].encode("utf-8")
         elif args.get("file_path"):
@@ -226,7 +226,7 @@ def register_audience_handlers(dispatch: dict, token: str):
         files = {"file": ("segment_data.csv", payload, "text/csv")}
         return _result(await _audience_api(client, "post", endpoint, _t, files=files))
 
-    async def segment_confirm(client, args, _t=token):
+    async def segment_confirm(client, args, _t):
         seg = {
             "id": args["segment_id"],
             "name": args["name"],
@@ -236,20 +236,20 @@ def register_audience_handlers(dispatch: dict, token: str):
         return _result(await _audience_api(
             client, "post", f"/segment/{args['segment_id']}/confirm", _t, body={"segment": seg}))
 
-    async def segment_update(client, args, _t=token):
+    async def segment_update(client, args, _t):
         return _result(await _audience_api(
             client, "put", f"/segment/{args['segment_id']}", _t,
             body={"segment": {"id": args["segment_id"], "name": args["name"]}}))
 
-    async def segment_delete(client, args, _t=token):
+    async def segment_delete(client, args, _t):
         return _result(await _audience_api(client, "delete", f"/segment/{args['segment_id']}", _t))
 
-    async def segment_reprocess(client, args, _t=token):
+    async def segment_reprocess(client, args, _t):
         return _result(await _audience_api(
             client, "put", f"/segment/{args['segment_id']}/reprocess", _t))
 
     def _create(endpoint, seg):
-        async def handler(client, args, _t=token, _e=endpoint, _s=seg):
+        async def handler(client, args, _t, _e=endpoint, _s=seg):
             return _result(await _audience_api(client, "post", _e, _t, body={"segment": _s(args)}))
         return handler
 
@@ -287,7 +287,7 @@ def register_audience_handlers(dispatch: dict, token: str):
                 seg[k] = args[k]
         return seg
 
-    async def segment_create_geo(client, args, _t=token):
+    async def segment_create_geo(client, args, _t):
         seg = {"name": args["name"], "geo_segment_type": args["geo_segment_type"]}
         for k in ("times_quantity", "period_length"):
             if args.get(k) is not None:
@@ -306,59 +306,59 @@ def register_audience_handlers(dispatch: dict, token: str):
 
     # ── GRANTS ───────────────────────────────────────────────────────
 
-    async def grants_get(client, args, _t=token):
+    async def grants_get(client, args, _t):
         return _result(await _audience_api(
             client, "get", f"/segment/{args['segment_id']}/grants", _t))
 
-    async def grant_add(client, args, _t=token):
+    async def grant_add(client, args, _t):
         grant = {"user_login": args["user_login"]}
         if args.get("comment"):
             grant["comment"] = args["comment"]
         return _result(await _audience_api(
             client, "put", f"/segment/{args['segment_id']}/grant", _t, body={"grant": grant}))
 
-    async def grant_delete(client, args, _t=token):
+    async def grant_delete(client, args, _t):
         return _result(await _audience_api(
             client, "delete", f"/segment/{args['segment_id']}/grant", _t,
             params={"user_login": args["user_login"]}))
 
     # ── PIXELS ───────────────────────────────────────────────────────
 
-    async def pixels_get(client, args, _t=token):
+    async def pixels_get(client, args, _t):
         return _result(await _audience_api(client, "get", "/pixels", _t))
 
-    async def pixel_create(client, args, _t=token):
+    async def pixel_create(client, args, _t):
         return _result(await _audience_api(
             client, "post", "/pixels", _t, body={"pixel": {"name": args["name"]}}))
 
-    async def pixel_update(client, args, _t=token):
+    async def pixel_update(client, args, _t):
         return _result(await _audience_api(
             client, "put", f"/pixel/{args['pixel_id']}", _t,
             body={"pixel": {"id": args["pixel_id"], "name": args["name"]}}))
 
-    async def pixel_delete(client, args, _t=token):
+    async def pixel_delete(client, args, _t):
         return _result(await _audience_api(client, "delete", f"/pixel/{args['pixel_id']}", _t))
 
-    async def pixel_undelete(client, args, _t=token):
+    async def pixel_undelete(client, args, _t):
         return _result(await _audience_api(
             client, "post", f"/pixel/{args['pixel_id']}/undelete", _t))
 
     # ── ACCOUNTS & DELEGATES ─────────────────────────────────────────
 
-    async def accounts_get(client, args, _t=token):
+    async def accounts_get(client, args, _t):
         return _result(await _audience_api(client, "get", "/accounts", _t))
 
-    async def delegates_get(client, args, _t=token):
+    async def delegates_get(client, args, _t):
         return _result(await _audience_api(client, "get", "/delegates", _t))
 
-    async def delegate_add(client, args, _t=token):
+    async def delegate_add(client, args, _t):
         delegate = {"user_login": args["user_login"], "perm": args["perm"]}
         if args.get("comment"):
             delegate["comment"] = args["comment"]
         return _result(await _audience_api(
             client, "put", "/delegate", _t, body={"delegate": delegate}))
 
-    async def delegate_delete(client, args, _t=token):
+    async def delegate_delete(client, args, _t):
         return _result(await _audience_api(
             client, "delete", "/delegate", _t, params={"user_login": args["user_login"]}))
 

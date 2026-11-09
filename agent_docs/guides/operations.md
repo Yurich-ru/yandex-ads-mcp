@@ -15,7 +15,12 @@
   Проверка импорта руками: `YD_OAUTH_TOKEN=x venv/bin/python -c "import server"`.
 - Зависимости/окружение: `python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt`;
   в репозитории venv уже есть (`venv/`, gitignored). Интерпретатор — `python3` (≥ 3.10).
-- Тесты: `venv/bin/python test_safety.py` — офлайн, без токенов и сети; сейчас 111 проверок зелёные.
+- Тесты: `venv/bin/python test_safety.py` — офлайн, без токенов и сети.
+- Windows: `python -m venv .venv`, затем `.venv/Scripts/python.exe -m pip install -r requirements.txt`
+  и `.venv/Scripts/python.exe test_safety.py`. Если встроенный `ensurepip` не сработал, зависимости
+  можно установить командой `uv pip install --python .venv/Scripts/python.exe -r requirements.txt`.
+  В песочнице Codex от 2026-11-06 установка потребовала доступа к PyPI, а даже
+  `asyncio.run(asyncio.sleep(0))` зависал. Офлайн-прогон вне песочницы прошёл без обращения к API.
 
 ## Деплой
 
@@ -50,6 +55,7 @@
 
 | Симптом (что видно) | Причина | Правило на будущее |
 |---|---|---|
+| Windows: офлайн-тест зависает при первом `asyncio.run()` в sandbox | Цикл событий Windows создаёт локальную пару сокетов. В трассировке зависание видно в `socket._fallback_socketpair` | Запустить `.venv/Scripts/python.exe -B test_safety.py` с разрешённым loopback. Тесты используют заглушки и не обращаются к API Яндекса |
 | Wordstat отвечает ошибкой авторизации при валидном OAuth-токене | OAuth-токены, выпущенные после 2026-06-01, Yandex Cloud больше не меняет на IAM | Задавать `YC_API_KEY` сервисного аккаунта с ролью `search-api.executor` |
 | `yd_audience_*` возвращают `403 access_denied` | В OAuth-приложении нет права «Яндекс Аудитории» | Добавить право на oauth.yandex.ru и **перевыпустить** токен |
 | Ретаргетинг на сегмент Аудиторий — ошибка 8800 «Объект не найден» | Директ ждёт `ExternalId = id + 2 000 000 000`, а не сырой id | Передавать `audience_segment_id`, кодировку добавляет инструмент |

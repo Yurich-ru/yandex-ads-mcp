@@ -22,7 +22,7 @@ async def _metrika_api(client, method, path, token, params=None, body=None):
     if resp.status_code == 204:
         return {"success": True}
     if resp.status_code >= 400:
-        raise Exception(f"Metrika API error {resp.status_code}: {resp.text[:500]}")
+        raise Exception(f"Metrika API error {resp.status_code}: {resp.text}")
     return resp.json()
 
 
@@ -305,12 +305,12 @@ METRIKA_TOOLS = [
 
 # ── Handler registration ─────────────────────────────────────────────
 
-def register_metrika_handlers(dispatch: dict, token: str):
+def register_metrika_handlers(dispatch: dict):
     """Register all 43 Metrika tool handlers into dispatch dict."""
 
     # ── COUNTERS ─────────────────────────────────────────────────────
 
-    async def counters_get(client, args, _token=token):
+    async def counters_get(client, args, _token):
         params = {}
         if args.get("search_string"):
             params["search_string"] = args["search_string"]
@@ -318,14 +318,14 @@ def register_metrika_handlers(dispatch: dict, token: str):
             params["favorite"] = "1" if args["favorite"] else "0"
         return await _crud_list(client, _token, "/management/v1/counters", params or None)
 
-    async def counter_get(client, args, _token=token):
+    async def counter_get(client, args, _token):
         return await _crud_list(client, _token, f"/management/v1/counter/{args['counter_id']}")
 
-    async def counter_create(client, args, _token=token):
+    async def counter_create(client, args, _token):
         body = {"counter": {"name": args["name"], "site2": {"site": args["site"]}}}
         return await _crud_create(client, _token, "/management/v1/counters", body)
 
-    async def counter_update(client, args, _token=token):
+    async def counter_update(client, args, _token):
         cid = args["counter_id"]
         counter = {}
         for k in ("name", "site", "favorite"):
@@ -333,15 +333,15 @@ def register_metrika_handlers(dispatch: dict, token: str):
                 counter[k] = args[k]
         return await _crud_update(client, _token, f"/management/v1/counter/{cid}", {"counter": counter})
 
-    async def counter_delete(client, args, _token=token):
+    async def counter_delete(client, args, _token):
         return await _crud_delete(client, _token, f"/management/v1/counter/{args['counter_id']}")
 
     # ── GOALS ────────────────────────────────────────────────────────
 
-    async def goals_get(client, args, _token=token):
+    async def goals_get(client, args, _token):
         return await _crud_list(client, _token, f"/management/v1/counter/{args['counter_id']}/goals")
 
-    async def goal_create(client, args, _token=token):
+    async def goal_create(client, args, _token):
         cid = args["counter_id"]
         body = {"goal": {
             "name": args["name"],
@@ -350,7 +350,7 @@ def register_metrika_handlers(dispatch: dict, token: str):
         }}
         return await _crud_create(client, _token, f"/management/v1/counter/{cid}/goals", body)
 
-    async def goal_update(client, args, _token=token):
+    async def goal_update(client, args, _token):
         cid, gid = args["counter_id"], args["goal_id"]
         goal = {}
         for k in ("name", "goal_type", "conditions"):
@@ -358,20 +358,20 @@ def register_metrika_handlers(dispatch: dict, token: str):
                 goal["type" if k == "goal_type" else k] = args[k]
         return await _crud_update(client, _token, f"/management/v1/counter/{cid}/goal/{gid}", {"goal": goal})
 
-    async def goal_delete(client, args, _token=token):
+    async def goal_delete(client, args, _token):
         return await _crud_delete(client, _token, f"/management/v1/counter/{args['counter_id']}/goal/{args['goal_id']}")
 
     # ── SEGMENTS ─────────────────────────────────────────────────────
 
-    async def segments_get(client, args, _token=token):
+    async def segments_get(client, args, _token):
         return await _crud_list(client, _token, f"/management/v1/counter/{args['counter_id']}/apisegment/segments")
 
-    async def segment_create(client, args, _token=token):
+    async def segment_create(client, args, _token):
         cid = args["counter_id"]
         body = {"segment": {"name": args["name"], "expression": args["expression"]}}
         return await _crud_create(client, _token, f"/management/v1/counter/{cid}/apisegment/segments", body)
 
-    async def segment_update(client, args, _token=token):
+    async def segment_update(client, args, _token):
         cid, sid = args["counter_id"], args["segment_id"]
         seg = {}
         for k in ("name", "expression"):
@@ -379,15 +379,15 @@ def register_metrika_handlers(dispatch: dict, token: str):
                 seg[k] = args[k]
         return await _crud_update(client, _token, f"/management/v1/counter/{cid}/apisegment/segment/{sid}", {"segment": seg})
 
-    async def segment_delete(client, args, _token=token):
+    async def segment_delete(client, args, _token):
         return await _crud_delete(client, _token, f"/management/v1/counter/{args['counter_id']}/apisegment/segment/{args['segment_id']}")
 
     # ── FILTERS ──────────────────────────────────────────────────────
 
-    async def filters_get(client, args, _token=token):
+    async def filters_get(client, args, _token):
         return await _crud_list(client, _token, f"/management/v1/counter/{args['counter_id']}/filters")
 
-    async def filter_create(client, args, _token=token):
+    async def filter_create(client, args, _token):
         cid = args["counter_id"]
         filt = {"attr": args["attr"], "type": args["type"], "value": args["value"]}
         if args.get("action"):
@@ -396,7 +396,7 @@ def register_metrika_handlers(dispatch: dict, token: str):
             filt["status"] = args["status"]
         return await _crud_create(client, _token, f"/management/v1/counter/{cid}/filters", {"filter": filt})
 
-    async def filter_update(client, args, _token=token):
+    async def filter_update(client, args, _token):
         cid, fid = args["counter_id"], args["filter_id"]
         filt = {}
         for k in ("attr", "type", "value", "action", "status"):
@@ -404,32 +404,32 @@ def register_metrika_handlers(dispatch: dict, token: str):
                 filt[k] = args[k]
         return await _crud_update(client, _token, f"/management/v1/counter/{cid}/filter/{fid}", {"filter": filt})
 
-    async def filter_delete(client, args, _token=token):
+    async def filter_delete(client, args, _token):
         return await _crud_delete(client, _token, f"/management/v1/counter/{args['counter_id']}/filter/{args['filter_id']}")
 
     # ── GRANTS ───────────────────────────────────────────────────────
 
-    async def grants_get(client, args, _token=token):
+    async def grants_get(client, args, _token):
         return await _crud_list(client, _token, f"/management/v1/counter/{args['counter_id']}/grants")
 
-    async def grant_add(client, args, _token=token):
+    async def grant_add(client, args, _token):
         cid = args["counter_id"]
         grant = {"user_login": args["user_login"], "perm": args.get("permission", "view")}
         if args.get("comment"):
             grant["comment"] = args["comment"]
         return await _crud_create(client, _token, f"/management/v1/counter/{cid}/grants", {"grant": grant})
 
-    async def grant_update(client, args, _token=token):
+    async def grant_update(client, args, _token):
         cid, login = args["counter_id"], args["user_login"]
         body = {"grant": {"perm": args["permission"]}}
         return await _crud_update(client, _token, f"/management/v1/counter/{cid}/grant/{login}", body)
 
-    async def grant_delete(client, args, _token=token):
+    async def grant_delete(client, args, _token):
         return await _crud_delete(client, _token, f"/management/v1/counter/{args['counter_id']}/grant/{args['user_login']}")
 
     # ── REPORTS ──────────────────────────────────────────────────────
 
-    async def report(client, args, _token=token):
+    async def report(client, args, _token):
         params = {
             "id": args["counter_id"],
             "metrics": ",".join(args["metrics"]),
@@ -445,7 +445,7 @@ def register_metrika_handlers(dispatch: dict, token: str):
             params["limit"] = args["limit"]
         return await _crud_list(client, _token, "/stat/v1/data", params)
 
-    async def report_by_time(client, args, _token=token):
+    async def report_by_time(client, args, _token):
         params = {
             "id": args["counter_id"],
             "metrics": ",".join(args["metrics"]),
@@ -458,7 +458,7 @@ def register_metrika_handlers(dispatch: dict, token: str):
                 params[k] = args[k]
         return await _crud_list(client, _token, "/stat/v1/data/bytime", params)
 
-    async def report_comparison(client, args, _token=token):
+    async def report_comparison(client, args, _token):
         params = {
             "id": args["counter_id"],
             "metrics": ",".join(args["metrics"]),
@@ -471,7 +471,7 @@ def register_metrika_handlers(dispatch: dict, token: str):
             params["dimensions"] = ",".join(args["dimensions"])
         return await _crud_list(client, _token, "/stat/v1/data/comparison", params)
 
-    async def report_drilldown(client, args, _token=token):
+    async def report_drilldown(client, args, _token):
         params = {
             "id": args["counter_id"],
             "metrics": ",".join(args["metrics"]),
@@ -484,26 +484,26 @@ def register_metrika_handlers(dispatch: dict, token: str):
 
     # ── OFFLINE DATA ─────────────────────────────────────────────────
 
-    async def upload_conversions(client, args, _token=token):
+    async def upload_conversions(client, args, _token):
         cid = args["counter_id"]
         ctype = args.get("client_id_type", "CLIENT_ID")
         path = f"/management/v1/counter/{cid}/offline_conversions/upload?client_id_type={ctype}"
         return await _crud_create(client, _token, path, {"conversions": args["conversions"]})
 
-    async def conversions_status(client, args, _token=token):
+    async def conversions_status(client, args, _token):
         return await _crud_list(client, _token, f"/management/v1/counter/{args['counter_id']}/offline_conversions/uploadings")
 
-    async def upload_calls(client, args, _token=token):
+    async def upload_calls(client, args, _token):
         cid = args["counter_id"]
         ctype = args.get("client_id_type", "CLIENT_ID")
         path = f"/management/v1/counter/{cid}/offline_conversions/calls/upload?client_id_type={ctype}"
         return await _crud_create(client, _token, path, {"calls": args["calls"]})
 
-    async def upload_expenses(client, args, _token=token):
+    async def upload_expenses(client, args, _token):
         cid = args["counter_id"]
         return await _crud_create(client, _token, f"/management/v1/counter/{cid}/expense/upload", {"expenses": args["expenses"]})
 
-    async def upload_user_params(client, args, _token=token):
+    async def upload_user_params(client, args, _token):
         cid = args["counter_id"]
         ctype = args.get("client_id_type", "CLIENT_ID")
         path = f"/management/v1/counter/{cid}/user_params/uploadings?client_id_type={ctype}"
@@ -511,40 +511,40 @@ def register_metrika_handlers(dispatch: dict, token: str):
 
     # ── LABELS ───────────────────────────────────────────────────────
 
-    async def labels_get(client, args, _token=token):
+    async def labels_get(client, args, _token):
         return await _crud_list(client, _token, "/management/v1/labels")
 
-    async def label_create(client, args, _token=token):
+    async def label_create(client, args, _token):
         return await _crud_create(client, _token, "/management/v1/labels", {"label": {"name": args["name"]}})
 
-    async def label_update(client, args, _token=token):
+    async def label_update(client, args, _token):
         lid = args["label_id"]
         return await _crud_update(client, _token, f"/management/v1/label/{lid}", {"label": {"name": args["name"]}})
 
-    async def label_delete(client, args, _token=token):
+    async def label_delete(client, args, _token):
         return await _crud_delete(client, _token, f"/management/v1/label/{args['label_id']}")
 
     # ── LABEL-COUNTER LINKS ──────────────────────────────────────────
 
-    async def label_link(client, args, _token=token):
+    async def label_link(client, args, _token):
         return await _crud_create(client, _token, f"/management/v1/counter/{args['counter_id']}/label/{args['label_id']}", {})
 
-    async def label_unlink(client, args, _token=token):
+    async def label_unlink(client, args, _token):
         return await _crud_delete(client, _token, f"/management/v1/counter/{args['counter_id']}/label/{args['label_id']}")
 
     # ── ANNOTATIONS ──────────────────────────────────────────────────
 
-    async def annotations_get(client, args, _token=token):
+    async def annotations_get(client, args, _token):
         return await _crud_list(client, _token, f"/management/v1/counter/{args['counter_id']}/chart_annotations")
 
-    async def annotation_create(client, args, _token=token):
+    async def annotation_create(client, args, _token):
         cid = args["counter_id"]
         ann = {"date": args["date"], "title": args["title"]}
         if args.get("message"):
             ann["message"] = args["message"]
         return await _crud_create(client, _token, f"/management/v1/counter/{cid}/chart_annotation", {"annotation": ann})
 
-    async def annotation_update(client, args, _token=token):
+    async def annotation_update(client, args, _token):
         cid, aid = args["counter_id"], args["annotation_id"]
         ann = {}
         for k in ("date", "title", "message"):
@@ -552,21 +552,21 @@ def register_metrika_handlers(dispatch: dict, token: str):
                 ann[k] = args[k]
         return await _crud_update(client, _token, f"/management/v1/counter/{cid}/chart_annotation/{aid}", {"annotation": ann})
 
-    async def annotation_delete(client, args, _token=token):
+    async def annotation_delete(client, args, _token):
         return await _crud_delete(client, _token, f"/management/v1/counter/{args['counter_id']}/chart_annotation/{args['annotation_id']}")
 
     # ── DELEGATES ────────────────────────────────────────────────────
 
-    async def delegates_get(client, args, _token=token):
+    async def delegates_get(client, args, _token):
         return await _crud_list(client, _token, "/management/v1/delegates")
 
-    async def delegate_add(client, args, _token=token):
+    async def delegate_add(client, args, _token):
         d = {"user_login": args["user_login"]}
         if args.get("comment"):
             d["comment"] = args["comment"]
         return await _crud_create(client, _token, "/management/v1/delegates", {"delegate": d})
 
-    async def delegate_delete(client, args, _token=token):
+    async def delegate_delete(client, args, _token):
         return await _crud_delete(client, _token, f"/management/v1/delegate/{args['user_login']}")
 
     # ── Register all handlers ────────────────────────────────────────

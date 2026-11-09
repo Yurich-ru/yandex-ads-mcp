@@ -9,8 +9,7 @@
 
 ## Next
 
-<!-- Пусто. B-001 (стартер влит в master) и B-002 (исключения в .gitignore есть)
-     закрыты к 2026-09-14 — см. git-историю. -->
+- [ ] shared-yandex-oauth-smoke — verify a standalone Direct CLIENT with an appropriate credential and independently expected identity. The [legacy agency smoke check](development-history/2026-11-06-2052-legacy-agency-smoke-pass.md) passed.
 
 ## Soon
 
