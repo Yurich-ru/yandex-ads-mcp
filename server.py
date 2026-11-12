@@ -1766,10 +1766,11 @@ async def _handle_keyword_bids_get(client, args):
     if ids := args.get("ad_group_ids"):
         criteria["AdGroupIds"] = ids
     if ids := args.get("keyword_ids"):
-        criteria["Ids"] = ids
+        criteria["KeywordIds"] = ids
     params = {
         "SelectionCriteria": criteria,
-        "FieldNames": ["KeywordId", "AdGroupId", "CampaignId", "SearchBid", "NetworkBid", "CurrentSearchPrice", "MinSearchPrice"],
+        "FieldNames": ["KeywordId", "AdGroupId", "CampaignId", "ServingStatus"],
+        "SearchFieldNames": ["Bid", "AuctionBids"],
     }
     data = await _api(client, "keywordbids", "get", params)
     return _result(data.get("result", data))

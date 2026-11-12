@@ -7,10 +7,14 @@
 > история живёт в `development-history/`.
 
 **Статус:** стабильный релиз 1.3.0; стартер инициализирован
-**Последнее обновление:** 2026-10-04
+**Последнее обновление:** 2026-11-12
 
 ## Что сделано
 
+- 12.11.2026: починен `yd_keyword_bids_get` — ставки и аукционные данные запрашиваются через
+  `SearchFieldNames` (`Bid`, `AuctionBids`), фильтр по ключам использует `KeywordIds`. Ошибка API
+  8000 устранена, живой read-only запрос по кампании проверен. Подробности —
+  `development-history/2026-11-12-1925-keyword-bids-get-fix.md`.
 - 02–04.10.2026: обнаружена заготовка будущего PR в форке @Tahionnn (ветка
   `feat/ad-images-file-path`: фичи file_path/url для `yd_ad_images_add` + переезд на
   uv/src-layout/Docker); владелец оставил [комментарий-приглашение](https://github.com/Tahionnn/yandex-ads-mcp/commit/152dd935f387f8c662974aa1c2d52ec18b054001#commitcomment-203096506)
