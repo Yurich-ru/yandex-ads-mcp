@@ -293,6 +293,27 @@ try:
             "with_competitors_brand": "NO",
         },
     }
+    asyncio.run(server._handle_keyword_bids_get(None, {"campaign_ids": [101]}))
+    keyword_bids_params = captured_api_calls[-1][2]
+    check("keyword bids get requests valid top-level fields",
+          keyword_bids_params["FieldNames"] ==
+          ["KeywordId", "AdGroupId", "CampaignId", "ServingStatus"])
+    check("keyword bids get requests bid and auction data as search fields",
+          keyword_bids_params["SearchFieldNames"] == ["Bid", "AuctionBids"])
+
+    keyword_bids_filters = [
+        ("campaign", {"campaign_ids": [101]}, "CampaignIds", [101]),
+        ("ad group", {"ad_group_ids": [202]}, "AdGroupIds", [202]),
+        ("keyword", {"keyword_ids": [303]}, "KeywordIds", [303]),
+    ]
+    for label, args, expected_key, expected_ids in keyword_bids_filters:
+        asyncio.run(server._handle_keyword_bids_get(None, args))
+        keyword_bids_criteria = captured_api_calls[-1][2]["SelectionCriteria"]
+        check(f"keyword bids get {label} filter uses {expected_key}",
+              keyword_bids_criteria == {expected_key: expected_ids})
+        check(f"keyword bids get {label} filter sends no Ids field",
+              "Ids" not in keyword_bids_criteria)
+
     asyncio.run(server._handle_keywords_add(None, {"keywords": [{
         "ad_group_id": 202,
         "keyword": "---autotargeting",

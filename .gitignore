@@ -10,3 +10,4 @@ build/
 .claude/*
 !.claude/skills/
 !.claude/hooks/
+.idea
