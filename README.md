@@ -56,6 +56,63 @@ cp .env.example .env
 
 ---
 
+## Удалённый доступ (Docker / Dokploy)
+
+Сервер работает по stdio; для удалённого подключения Docker-образ оборачивает его в HTTP через [mcp-proxy](https://pypi.org/project/mcp-proxy/). Один контейнер = один процесс сервера = один набор токенов; несколько кабинетов — через `YANDEX_TOKENS` / `YD_DIRECT_TOKENS` и выбор логина в вызове.
+
+### Сборка и запуск
+
+```bash
+docker build -t yandex-ads-mcp .
+docker run -d --name yandex-ads-mcp -p 8765:8765 \
+  -e PUBLIC_HOST=mcp.example.com \
+  -e YD_OAUTH_TOKEN=YOUR_TOKEN \
+  -e YD_CONFIRM=true \
+  yandex-ads-mcp
+```
+
+- `PUBLIC_HOST` — публичное имя хоста без схемы. Читается обёрткой mcp-proxy (списки разрешённых `Host`/`Origin`), а не `server.py`; без неё контейнер сразу завершается.
+- Эндпоинты: `/mcp` (streamable HTTP), `/sse` (legacy SSE), `/healthz` (проверка живости, отвечает `204`).
+- Токены и защитные переменные — те же, что в таблице «Переменные окружения»; передаются через `-e` или env-блок хостинга.
+
+### Публикация за TLS и Basic Auth
+
+Контейнер слушает обычный HTTP без аутентификации — выставляйте его только за reverse proxy с TLS и Basic Auth (например, Dokploy: домен + Let's Encrypt + Basic Auth в настройках приложения). Клиенты передают заголовок `Authorization: Basic <base64(логин:пароль)>`.
+
+Claude Code:
+
+```bash
+claude mcp add --transport http yandex-ads https://mcp.example.com/mcp \
+  --header "Authorization: Basic <base64(логин:пароль)>"
+```
+
+Cursor / Codex / любой HTTP-клиент:
+
+```json
+{
+  "yandex-ads": {
+    "type": "http",
+    "url": "https://mcp.example.com/mcp",
+    "headers": { "Authorization": "Basic <base64(логин:пароль)>" }
+  }
+}
+```
+
+Claude Desktop (умеет только stdio) — через мост `mcp-remote`:
+
+```json
+{
+  "yandex-ads": {
+    "command": "npx",
+    "args": ["mcp-remote", "https://mcp.example.com/mcp", "--header", "Authorization: Basic <base64(логин:пароль)>"]
+  }
+}
+```
+
+> **Один эндпоинт — один набор токенов.** Все подключённые клиенты работают с одними и теми же кабинетами. Для боевого доступа включайте `YD_CONFIRM=true` (или `YD_READONLY=true`) и ограничивайте `YD_ALLOWED_LOGINS`. Токены храните только в переменных окружения хостинга (в Dokploy — env-блок приложения), не в образе и не в репозитории.
+
+---
+
 ## Получение токенов
 
 ### OAuth-токен для Директа, Метрики и Аудиторий

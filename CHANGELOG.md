@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Удалённый HTTP-доступ: Dockerfile с мостом mcp-proxy (streamable HTTP `/mcp`, legacy `/sse`, `/healthz`) для публикации за TLS и Basic Auth (Dokploy). Код сервера и инструменты не менялись; новая переменная `PUBLIC_HOST` читается только обёрткой.
 - Explicit empty/null legacy Direct selectors preserve `YD_LOGIN` routing; discovery rejects nonempty Direct results without valid logins.
 - Общий список аккаунтов для Директа, Метрики и Аудиторий с выбором аккаунта на уровне вызова.
 - `yd_yandex_accounts_get` перечисляет настроенные аккаунты и по запросу проверяет доступ на чтение.
