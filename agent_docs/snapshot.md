@@ -6,8 +6,8 @@
 > проблемы»/«Следующие шаги». Snapshot, накопивший историю, перестаёт отвечать на свой вопрос —
 > история живёт в `development-history/`.
 
-**Статус:** стабильный релиз 1.3.0; стартер инициализирован
-**Последнее обновление:** 2026-11-09
+**Статус:** стабильный релиз 1.3.0; удалённый HTTP-деплой (Dokploy) в процессе
+**Последнее обновление:** 2026-11-13
 
 ## Что сделано
 
@@ -47,6 +47,11 @@
 
 ## Что в процессе
 
+- Удалённый HTTP-деплой на Dokploy (`yandex.riddler.agency`, ветка `feat/remote-deploy`):
+  Dockerfile с mcp-proxy и документация готовы, образ собран локально. Открытые шаги:
+  smoke-тест контейнера, PR в `codex/custom`, создание приложения и деплой в Dokploy,
+  секреты и Basic Auth в UI владельцем, проверка эндпоинта. Конфигурация и грабли —
+  `guides/operations.md`, решение — `adr/2026-11-13-2234-http-bridge-dokploy.md`.
 - Ожидание реакции @Tahionnn на приглашение открыть PR (комментарий от 02.10 в его форке,
   по состоянию на 04.10 ответа и PR нет). Следит облачная рутина-дозор; при появлении PR —
   ревью по методике из `development-history/2026-09-14-1011-pr2-review-release.md`.
@@ -63,8 +68,8 @@
 ## Не проверено
 
 - A CLIENT-type standalone Direct account remains unverified. The successful Metrica counter reads reported edit access. [Counter smoke results](development-history/2026-11-06-2024-yandex-oauth-counter-smoke.md)
-- `deploy.yml` из стартера намеренно не создан: это MCP-пакет без сервиса и Portainer-стека,
-  деплоя нет. Если появится сервисная обёртка — включать по `agent_docs/guides/autodeploy.md`.
+- `deploy.yml` из стартера намеренно не создан: удалённый сервис деплоится через Dokploy
+  (Dockerfile, не Portainer-стек). Если появится Portainer-стек — включать по `agent_docs/guides/autodeploy.md`.
 - Хуки `state-freshness.sh` и `handoff-nudge.sh` оставлены выключенными; подключаются
   осознанно по [гайду](guides/context-management.md).
 - Стартовые инварианты в `agent_docs/invariants.md` переписаны под проект по README

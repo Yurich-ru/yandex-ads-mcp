@@ -24,13 +24,38 @@
 
 ## Деплой
 
-Сервиса и Portainer-стека нет: пакет запускается локально ассистентом. «Деплой» = релиз:
+Пакет запускается локально ассистентом (stdio) и дополнительно развёрнут как удалённый
+HTTP-сервис на Dokploy. Portainer-стека нет.
+
+### Релиз пакета (локальный stdio)
 
 - Триггер: коммит в `master` с версией в скобках в сообщении.
 - Пайплайн: GitHub Actions `test.yml` (push/PR в `master`) гоняет `test_safety.py`; `markdownlint.yml` — линт Markdown.
 - Что обновить при релизе: `pyproject.toml` (version), `CHANGELOG.md` (запись с датой), счётчик инструментов в README и docstring `server.py`.
 - Как проверить, что доехало: зелёный workflow на `master`; у пользователей — `git pull` и перезапуск ассистента.
 - Как откатить: обычный `git revert`, пользователи подтягивают.
+
+### Удалённый HTTP-сервис (Dokploy)
+
+- Хост: `netcup-vps` (Debian 13), serverId `hyp_1VMpWnHITJRldL4QO`; проект `netcup-vps`,
+  окружение `production` (`y1TvpSgCQqqzMVYxzPpjS`).
+- Приложение `yandex-ads-mcp`, applicationId `TODO-после-создания`; домен
+  `yandex.riddler.agency` (A → 62.83.19.26, Let's Encrypt), порт 8765.
+- Источник: GitHub `rypMaH/yandex-ads-mcp`, ветка `feat/remote-deploy` (после ревью —
+  `codex/custom`), сборка Dockerfile, финальный stage `production`. Автодеплой выключен.
+- Мост stdio→HTTP: `mcp-proxy==0.15.0` (`/mcp`, legacy `/sse`, `/healthz` → 204);
+  один дочерний процесс = один набор токенов, вторая реплика невозможна.
+- Несекретный env (задан через MCP): `PUBLIC_HOST=yandex.riddler.agency`,
+  `YD_CONFIRM=true`, `YD_LOG_LEVEL=INFO`.
+- Секреты: только env-блок приложения в Dokploy UI (`YD_OAUTH_TOKEN` или
+  `YANDEX_TOKENS` + `YANDEX_DEFAULT_LOGIN`, опционально `YC_FOLDER_ID`/`YC_API_KEY`,
+  per-service токены). В чат, репозиторий и этот файл не попадают.
+- Редеплой: `application-deploy` (Dokploy MCP) или Deploy в UI; статус — `application-one`,
+  логи — `application-readLogs` / UI. Сессии stateful: каждый редеплой их обрывает,
+  клиент должен переинициализироваться.
+- Basic Auth: пользователи задаются в UI (Advanced → Security); после изменения —
+  `application-reload` без пересборки. Basic Auth и `MCP_PROXY_AUTH_TOKEN` несовместимы
+  (оба используют заголовок `Authorization`).
 
 ## Секреты и переменные окружения
 
@@ -42,7 +67,8 @@
 
 ## Доступ к прод-окружению
 
-Прода нет. Боевые кабинеты клиентов — это внешние API; при работе с ними включать
+Прод — удалённый HTTP-эндпоинт `https://yandex.riddler.agency/mcp` на `netcup-vps`
+(Dokploy, Basic Auth). Боевые кабинеты клиентов — это внешние API; при работе с ними включать
 `YD_READONLY=true` или `YD_CONFIRM=true` и ограничивать `YD_ALLOWED_LOGINS`.
 
 **Запись в боевой кабинет — необратимое действие: согласовывать с владельцем кабинета.**
@@ -63,3 +89,7 @@
 | CI на PR внешнего контрибьютора «no checks reported», прогоны в статусе `action_required` | GitHub не запускает workflow первого контрибьютора без ручного одобрения | Одобрить: `gh api -X POST repos/<owner>/<repo>/actions/runs/<id>/approve` (id — из `gh api ".../actions/runs?event=pull_request"`) |
 | `gh run list --branch` → `unknown flag` | В dev-контейнере старый `gh` 2.4.0 (2022) | Статусы CI смотреть через `gh api "repos/<owner>/<repo>/actions/runs?branch=master"` |
 | Облачная рутина (claude.ai routines): curl к api.github.com отвечает «GitHub access to this repository is not enabled for this session» | Облачная сессия проксирует GitHub API и открывает его только для репозиториев, подключённых к сессии; `add_repo` даёт лишь git-чтение | Для чужих публичных репозиториев из облака: данные веток — через `git ls-remote`, комментарии/issues чужих репо из облака недоступны — проверять локально |
+| Контейнер yandex-ads-mcp сразу завершается: `PUBLIC_HOST must be set` | CMD подставляет `${PUBLIC_HOST:?}` в `--allowed-host`; пустое значение дало бы невалидный authority и падение позже | Задавать `PUBLIC_HOST` в env приложения до первого деплоя; без секретов контейнер всё равно рестарт-лупит — env заполнять целиком |
+| Клиент получает `421 Invalid Host header` при верном домене | SDK сверяет Host точно либо по шаблону `host:*`; Traefik на 443 шлёт голый Host без порта | В `--allowed-host` передавать оба варианта: `host` и `host:*` |
+| Inspector/браузер получает `403 Invalid Origin header` на `/mcp` | Запрос с заголовком `Origin`, CORS по умолчанию запрещён | `--allow-origin=https://<host>` в CMD обёртки |
+| Dokploy собирает образ не из того stage | Финальный stage Dockerfile не совпадает с `dockerBuildStage` | Финальный stage называть `production` (`FROM … AS production`) и указывать его в `application-saveBuildType` |
