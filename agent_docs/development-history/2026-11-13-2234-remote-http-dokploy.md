@@ -24,6 +24,8 @@
   `tools/list` 152, `yd_direct_accounts_get` вернул живой кабинет (токен рабочий),
   mutating без confirm → превью. `yd_yandex_accounts_get` не зарегистрирован:
   задан `YD_OAUTH_TOKEN`, а не `YANDEX_TOKENS` (инструмент появляется только с реестром).
+- PR #1 смержен в `codex/custom` (`642a4f3`), приложение переведено на `codex/custom`
+  и передеплоено; повторная проверка: 401 без auth, 204 healthz, свежий handshake.
 
 ## Зачем
 
@@ -43,5 +45,4 @@
 ## Следующие шаги
 
 - Владелец подключает клиент (Claude Code / Cursor / `mcp-remote`) и подтверждает список инструментов.
-- Ревью и мерж PR #1 в `codex/custom`, затем переключить ветку приложения и редеплой.
 - Если нужен `yd_yandex_accounts_get`: задать `YANDEX_TOKENS` + `YANDEX_DEFAULT_LOGIN` в env и редеплой.

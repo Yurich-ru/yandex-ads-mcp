@@ -11,6 +11,10 @@
 
 ## Что сделано
 
+- 2026-11-13: удалённый HTTP-сервис развёрнут на Dokploy (`yandex.riddler.agency`,
+  `netcup-vps`) и проверен: 401 без auth, handshake через Traefik, 152 инструмента,
+  живое чтение кабинетов, confirm-гейт. PR #1 смержен в `codex/custom`, приложение
+  переведено на эту ветку и передеплоено. [Итерация](development-history/2026-11-13-2234-remote-http-dokploy.md) · [ADR](adr/2026-11-13-2234-http-bridge-dokploy.md)
 - 2026-11-06: the read-only legacy agency Direct check passed. The request used `YD_OAUTH_TOKEN` and `Client-Login`. Direct returned the configured advertiser login with a ClientId. [Agency smoke result](development-history/2026-11-06-2052-legacy-agency-smoke-pass.md)
 - 2026-11-06: read-only agency and Audience smoke tests confirmed the expected segment for registry entry 1. The agency request used the intended token and header, but Direct returned error 8800. [Smoke results](development-history/2026-11-06-2100-agency-audience-smoke.md)
 - 2026-11-06: fixed both OAuth review defects. An explicit empty legacy selector retains `YD_LOGIN` routing, and Direct discovery rejects malformed nonempty Login entries. Corrected `.env.example` and added frozen pre-change schema fingerprints. All 286 offline checks passed. [Review fixes](development-history/2026-11-06-2042-yandex-oauth-review-fixes.md)
@@ -47,12 +51,6 @@
 
 ## Что в процессе
 
-- Удалённый HTTP-деплой на Dokploy (`yandex.riddler.agency`): сервис развёрнут с ветки
-  `feat/remote-deploy`, проверка пройдена (401 без auth, handshake, 152 инструмента,
-  живое чтение кабинетов, confirm-гейт). Открыто: PR #1 в `codex/custom` ждёт ревью и
-  мержа; после мержа — переключить ветку приложения на `codex/custom` и редеплой;
-  подключение клиента владельцем. Конфигурация — `guides/operations.md`, решение —
-  `adr/2026-11-13-2234-http-bridge-dokploy.md`.
 - Ожидание реакции @Tahionnn на приглашение открыть PR (комментарий от 02.10 в его форке,
   по состоянию на 04.10 ответа и PR нет). Следит облачная рутина-дозор; при появлении PR —
   ревью по методике из `development-history/2026-09-14-1011-pr2-review-release.md`.
@@ -81,4 +79,5 @@
 
 ## Следующие шаги
 
+- Подключить клиент к `https://yandex.riddler.agency/mcp` (Basic Auth) и подтвердить список инструментов. При необходимости `yd_yandex_accounts_get` — задать `YANDEX_TOKENS` + `YANDEX_DEFAULT_LOGIN` в env приложения и редеплой.
 - Complete the standalone Direct CLIENT check with an appropriate credential and independently expected identity. [Smoke matrix](development-history/2026-11-06-2018-yandex-oauth-final-review.md)

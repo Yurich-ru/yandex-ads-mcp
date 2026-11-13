@@ -42,8 +42,8 @@ HTTP-сервис на Dokploy. Portainer-стека нет.
 - Приложение `yandex-ads-mcp` (applicationId `px5-RaAYK7Wy6pdnHmKOQ`, appName
   `yandex-ads-mcp-sbtsma`); домен `yandex.riddler.agency` (A → 62.83.19.26,
   Let's Encrypt, domainId `07YJHhPDevkTT4YcMvWe4`), порт 8765.
-- Источник: GitHub `rypMaH/yandex-ads-mcp`, ветка `feat/remote-deploy` (после ревью —
-  `codex/custom`), сборка Dockerfile, финальный stage `production`. Автодеплой выключен.
+- Источник: GitHub `rypMaH/yandex-ads-mcp`, ветка `codex/custom` (PR #1 смержен),
+  сборка Dockerfile, финальный stage `production`. Автодеплой выключен.
 - Мост stdio→HTTP: `mcp-proxy==0.15.0` (`/mcp`, legacy `/sse`, `/healthz` → 204);
   один дочерний процесс = один набор токенов, вторая реплика невозможна.
 - Несекретный env (задан через MCP): `PUBLIC_HOST=yandex.riddler.agency`,
