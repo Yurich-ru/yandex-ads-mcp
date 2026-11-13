@@ -39,8 +39,9 @@ HTTP-сервис на Dokploy. Portainer-стека нет.
 
 - Хост: `netcup-vps` (Debian 13), serverId `hyp_1VMpWnHITJRldL4QO`; проект `netcup-vps`,
   окружение `production` (`y1TvpSgCQqqzMVYxzPpjS`).
-- Приложение `yandex-ads-mcp`, applicationId `TODO-после-создания`; домен
-  `yandex.riddler.agency` (A → 62.83.19.26, Let's Encrypt), порт 8765.
+- Приложение `yandex-ads-mcp` (applicationId `px5-RaAYK7Wy6pdnHmKOQ`, appName
+  `yandex-ads-mcp-sbtsma`); домен `yandex.riddler.agency` (A → 62.83.19.26,
+  Let's Encrypt, domainId `07YJHhPDevkTT4YcMvWe4`), порт 8765.
 - Источник: GitHub `rypMaH/yandex-ads-mcp`, ветка `feat/remote-deploy` (после ревью —
   `codex/custom`), сборка Dockerfile, финальный stage `production`. Автодеплой выключен.
 - Мост stdio→HTTP: `mcp-proxy==0.15.0` (`/mcp`, legacy `/sse`, `/healthz` → 204);
