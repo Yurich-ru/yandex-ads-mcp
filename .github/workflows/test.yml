@@ -25,3 +25,16 @@ jobs:
 
       - name: Run offline safety tests
         run: python3 test_safety.py
+
+      - name: Build and verify wheel
+        run: |
+          python -m pip install --upgrade setuptools wheel
+          python -m pip wheel . -w dist --no-deps
+          python - <<'PY'
+          import glob, zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          names = set(zipfile.ZipFile(wheel).namelist())
+          expected = {"server.py", "tools_metrika.py", "tools_audience.py", "tools_direct_extra.py"}
+          missing = expected - names
+          assert not missing, f"wheel is missing {sorted(missing)}"
+          PY

@@ -6,11 +6,15 @@ Auth: OAuth token; the OAuth app must have the "Яндекс Аудитории"
 (create/edit + read segments). Without it the API returns 403 access_denied.
 """
 
+import os
 import json
-import httpx
+
 from mcp.types import Tool, TextContent
 
+from tools_direct_extra import request_with_retry
+
 BASE_URL = "https://api-audience.yandex.ru/v1/management"
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -19,14 +23,10 @@ async def _audience_api(client, method, path, token, params=None, body=None, fil
     """Call Yandex Audience API."""
     url = f"{BASE_URL}{path}"
     headers = {"Authorization": f"OAuth {token}"}
-    kwargs = {"headers": headers, "timeout": 60}
-    if params:
-        kwargs["params"] = params
-    if body is not None:
-        kwargs["json"] = body
-    if files is not None:
-        kwargs["files"] = files
-    resp = await getattr(client, method.lower())(url, **kwargs)
+    resp = await request_with_retry(
+        client, url, method=method.upper(), headers=headers,
+        params=params, json_body=body, files=files, timeout=60,
+    )
     if resp.status_code == 204:
         return {"success": True}
     try:
@@ -217,13 +217,23 @@ def register_audience_handlers(dispatch: dict, token: str):
     async def segment_upload(client, args, _t=token):
         if args.get("content"):
             payload = args["content"].encode("utf-8")
+            if len(payload) > MAX_UPLOAD_BYTES:
+                return _result({"error": f"Upload is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB"})
         elif args.get("file_path"):
+            if not os.path.isfile(args["file_path"]):
+                return _result({"error": f"File not found: {args['file_path']}"})
+            if os.path.getsize(args["file_path"]) > MAX_UPLOAD_BYTES:
+                return _result({"error": f"File is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB"})
             with open(args["file_path"], "rb") as f:
                 payload = f.read()
         else:
             return _result({"error": "Provide 'content' or 'file_path'"})
         endpoint = "/segments/upload_csv_file" if args.get("csv") else "/segments/upload_file"
-        files = {"file": ("segment_data.csv", payload, "text/csv")}
+        if args.get("csv"):
+            filename, mime = "segment_data.csv", "text/csv"
+        else:
+            filename, mime = "segment_data.tsv", "application/octet-stream"
+        files = {"file": (filename, payload, mime)}
         return _result(await _audience_api(client, "post", endpoint, _t, files=files))
 
     async def segment_confirm(client, args, _t=token):
@@ -231,7 +241,7 @@ def register_audience_handlers(dispatch: dict, token: str):
             "id": args["segment_id"],
             "name": args["name"],
             "content_type": args["content_type"],
-            "hashed": 1 if args.get("hashed") else 0,
+            "hashed": bool(args.get("hashed")),
         }
         return _result(await _audience_api(
             client, "post", f"/segment/{args['segment_id']}/confirm", _t, body={"segment": seg}))

@@ -1,5 +1,6 @@
 """Extra Yandex Direct API tools: VCards, Feeds, Smart targets, Ad types, Videos, Creatives, misc."""
 
+import os
 import re
 import json
 import time
@@ -17,15 +18,23 @@ logger = logging.getLogger("yandex-ads-mcp")
 _RETRY_STATUS = (429, 500, 502, 503, 504)
 
 
-async def request_with_retry(client, url, *, headers, json_body, timeout, max_attempts=4):
-    """POST with capped exponential backoff on transient errors / rate limits.
+async def request_with_retry(client, url, *, method="POST", headers=None, json_body=None,
+                             params=None, files=None, timeout, max_attempts=4):
+    """Call an API with capped exponential backoff on transient errors / rate limits.
 
     Honours Retry-After when present. Returns the final response (success or last failure).
     """
     delay = 1.0
     resp = None
     for attempt in range(1, max_attempts + 1):
-        resp = await client.post(url, headers=headers, json=json_body, timeout=timeout)
+        kwargs = {"headers": headers, "timeout": timeout}
+        if params is not None:
+            kwargs["params"] = params
+        if json_body is not None:
+            kwargs["json"] = json_body
+        if files is not None:
+            kwargs["files"] = files
+        resp = await client.request(method, url, **kwargs)
         if resp.status_code in _RETRY_STATUS and attempt < max_attempts:
             ra = resp.headers.get("Retry-After", "")
             wait = float(ra) if ra.isdigit() else delay
@@ -113,10 +122,11 @@ def _log_body(prefix, *args):
 
 
 def annotate_partial(data):
-    """Surface Yandex Direct per-item Errors/Warnings (partial success) at the top level.
+    """Surface Yandex Direct per-item Errors/Warnings (partial success) inside `result`.
 
     Direct v5 returns 200 OK even when individual items fail; the failures live inside
     result.<List>[i].Errors / .Warnings. Without this, a half-failed bulk add looks like success.
+    The marker lives in `result` so handlers that return data["result"] keep it.
     """
     result = data.get("result") if isinstance(data, dict) else None
     if not isinstance(result, dict):
@@ -134,13 +144,15 @@ def annotate_partial(data):
                 issues.append({"list": key, "index": idx, "level": "warning", "messages": item["Warnings"]})
     if issues:
         error_count = sum(1 for i in issues if i["level"] == "error")
-        data = dict(data)
-        data["_partial_success"] = {
+        result = dict(result)
+        result["_partial_success"] = {
             "ok": error_count == 0,
             "error_count": error_count,
             "warning_count": len(issues) - error_count,
             "issues": issues,
         }
+        data = dict(data)
+        data["result"] = result
     return data
 
 
@@ -187,9 +199,9 @@ async def _get_iam(client, oauth_token):
     now = time.time()
     if _iam_cache["token"] and _iam_cache["expires"] > now + 300:
         return _iam_cache["token"]
-    resp = await client.post(
-        "https://iam.api.cloud.yandex.net/iam/v1/tokens",
-        json={"yandexPassportOauthToken": oauth_token}, timeout=30,
+    resp = await request_with_retry(
+        client, "https://iam.api.cloud.yandex.net/iam/v1/tokens",
+        json_body={"yandexPassportOauthToken": oauth_token}, timeout=30,
     )
     data = resp.json()
     if "iamToken" not in data:
@@ -382,7 +394,7 @@ EXTRA_DIRECT_TOOLS = [
     # --- Video / Creative tools ---
     Tool(
         name="yd_videos_upload",
-        description="Upload a video from a local file (base64-encoded).",
+        description="Upload a video from a local file (read and base64-encoded by the server).",
         inputSchema={
             "type": "object",
             "properties": {
@@ -394,12 +406,13 @@ EXTRA_DIRECT_TOOLS = [
     ),
     Tool(
         name="yd_videos_get",
-        description="Get ad videos. Optionally filter by IDs.",
+        description="Get ad videos by string IDs. Returns Id and Status.",
         inputSchema={
             "type": "object",
             "properties": {
-                "video_ids": {"type": "array", "items": {"type": "integer"}},
+                "video_ids": {"type": "array", "items": {"type": "string"}, "description": "Video IDs (strings, as returned by yd_videos_upload)"},
             },
+            "required": ["video_ids"],
         },
     ),
     Tool(
@@ -435,18 +448,6 @@ EXTRA_DIRECT_TOOLS = [
                 "callout_ids": {"type": "array", "items": {"type": "integer"}, "description": "Callout extension IDs"},
             },
             "required": ["ad_id", "callout_ids"],
-        },
-    ),
-    Tool(
-        name="yd_bid_modifiers_toggle",
-        description="Enable or disable bid modifiers.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "bid_modifier_ids": {"type": "array", "items": {"type": "integer"}},
-                "enabled": {"type": "boolean", "description": "true = enable, false = disable"},
-            },
-            "required": ["bid_modifier_ids", "enabled"],
         },
     ),
     Tool(
@@ -549,8 +550,13 @@ async def _handle_feeds_get(client, args, config):
     criteria = {}
     if ids := args.get("feed_ids"):
         criteria["Ids"] = ids
-    fields = ["Id", "Name", "BusinessType", "SourceType", "UrlFeed", "Status", "NumberOfItems"]
-    data = await _api(client, "feeds", "get", {"SelectionCriteria": criteria, "FieldNames": fields}, **c)
+    params = {
+        "SelectionCriteria": criteria,
+        "FieldNames": ["Id", "Name", "BusinessType", "SourceType", "Status", "NumberOfItems"],
+        "UrlFeedFieldNames": ["Url", "Login", "RemoveUtmTags"],
+        "FileFeedFieldNames": ["Filename"],
+    }
+    data = await _api(client, "feeds", "get", params, **c)
     return _result(data.get("result", data))
 
 
@@ -652,9 +658,16 @@ async def _handle_ads_add_shopping(client, args, config):
 
 # --- Video / Creative tools ---
 
+MAX_VIDEO_BYTES = 100 * 1024 * 1024
+
+
 async def _handle_videos_upload(client, args, config):
     c = _cfg(config)
     file_path = args["file_path"]
+    if not os.path.isfile(file_path):
+        raise ValueError(f"Video file not found: {file_path}")
+    if os.path.getsize(file_path) > MAX_VIDEO_BYTES:
+        raise ValueError(f"Video file is larger than {MAX_VIDEO_BYTES // (1024 * 1024)} MB")
     with open(file_path, "rb") as f:
         video_data = base64.b64encode(f.read()).decode("ascii")
     name = args.get("name") or file_path.rsplit("/", 1)[-1]
@@ -668,8 +681,10 @@ async def _handle_videos_get(client, args, config):
     criteria = {}
     if ids := args.get("video_ids"):
         criteria["Ids"] = ids
-    fields = ["Id", "Name", "Status", "Duration", "PreviewUrl"]
-    data = await _api(client, "advideos", "get", {"SelectionCriteria": criteria, "FieldNames": fields}, **c)
+    data = await _api(client, "advideos", "get", {
+        "SelectionCriteria": criteria,
+        "FieldNames": ["Id", "Status"],
+    }, **c)
     return _result(data.get("result", data))
 
 
@@ -687,8 +702,12 @@ async def _handle_creatives_get(client, args, config):
         criteria["Ids"] = ids
     if types := args.get("types"):
         criteria["Types"] = types
-    fields = ["Id", "Type", "Name", "PreviewUrl", "VideoExtensionCreative"]
-    data = await _api(client, "creatives", "get", {"SelectionCriteria": criteria, "FieldNames": fields}, **c)
+    params = {
+        "SelectionCriteria": criteria,
+        "FieldNames": ["Id", "Type", "Name", "PreviewUrl"],
+        "VideoExtensionCreativeFieldNames": ["Duration"],
+    }
+    data = await _api(client, "creatives", "get", params, **c)
     return _result(data.get("result", data))
 
 
@@ -702,14 +721,6 @@ async def _handle_callouts_link(client, args, config):
     return _result(data.get("result", data))
 
 
-async def _handle_bid_modifiers_toggle(client, args, config):
-    c = _cfg(config)
-    enabled = "YES" if args["enabled"] else "NO"
-    items = [{"BidModifierId": mid, "Enabled": enabled} for mid in args["bid_modifier_ids"]]
-    data = await _api(client, "bidmodifiers", "toggle", {"BidModifierToggleItems": items}, **c)
-    return _result(data.get("result", data))
-
-
 async def _handle_adgroups_update(client, args, config):
     c = _cfg(config)
     group = {"Id": args["adgroup_id"]}
@@ -717,7 +728,7 @@ async def _handle_adgroups_update(client, args, config):
         group["Name"] = name
     if rids := args.get("region_ids"):
         group["RegionIds"] = rids
-    if nk := args.get("negative_keywords"):
+    if (nk := args.get("negative_keywords")) is not None:
         group["NegativeKeywords"] = {"Items": nk}
     if tp := args.get("tracking_params"):
         group["TrackingParams"] = tp
@@ -773,7 +784,6 @@ _HANDLER_MAP = {
     "yd_creatives_add": _handle_creatives_add,
     "yd_creatives_get": _handle_creatives_get,
     "yd_callouts_link": _handle_callouts_link,
-    "yd_bid_modifiers_toggle": _handle_bid_modifiers_toggle,
     "yd_adgroups_update": _handle_adgroups_update,
     "yd_regions_get": _handle_regions_get,
     "yd_interests_get": _handle_interests_get,
@@ -907,6 +917,28 @@ async def _handle_audience_targets_resume(client, args, config):
 
 # ── RetargetingLists: update ──────────────────────────────────────────
 
+_AUDIENCE_SEGMENT_ID_OFFSET = 2_000_000_000  # Direct encodes Audience segments as id + 2e9
+
+
+def retargeting_rule_payload(rules):
+    """Build Direct RetargetingLists rule items from the tool argument shape."""
+    payload = []
+    for rule in rules:
+        arguments = []
+        for goal in rule["goals"]:
+            if goal.get("audience_segment_id") is not None:
+                argument = {"ExternalId": _AUDIENCE_SEGMENT_ID_OFFSET + int(goal["audience_segment_id"])}
+            elif goal.get("goal_id") is not None:
+                argument = {"ExternalId": goal["goal_id"]}
+            else:
+                raise ValueError("Each goal needs goal_id or audience_segment_id")
+            if goal.get("membership_life_span") is not None:
+                argument["MembershipLifeSpan"] = goal["membership_life_span"]
+            arguments.append(argument)
+        payload.append({"Operator": rule["operator"], "Arguments": arguments})
+    return payload
+
+
 async def _handle_retargeting_lists_update(client, args, config):
     item = {"Id": args["id"]}
     if name := args.get("name"):
@@ -914,13 +946,7 @@ async def _handle_retargeting_lists_update(client, args, config):
     if desc := args.get("description"):
         item["Description"] = desc
     if rules := args.get("rules"):
-        item["Rules"] = [{
-            "Operator": r["operator"],
-            "Arguments": [
-                {"ExternalId": g["goal_id"], "MembershipLifeSpan": g["membership_life_span"]}
-                for g in r["goals"]
-            ],
-        } for r in rules]
+        item["Rules"] = retargeting_rule_payload(rules)
     data = await _api(client, "retargetinglists", "update", {"RetargetingLists": [item]}, **config)
     return _result(data.get("result", data))
 
@@ -1059,20 +1085,24 @@ _NEW_TOOLS = [
                 "description": {"type": "string", "description": "New description (optional)"},
                 "rules": {
                     "type": "array",
-                    "description": "Replacement rules (optional). Each rule: {operator: AND|OR|NOT, goals: [{goal_id, membership_life_span}]}",
+                    "description": "Replacement rules (optional). Each rule: {operator: ALL|ANY|NONE, goals: [{goal_id, membership_life_span}]}",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "operator": {"type": "string", "enum": ["AND", "OR", "NOT"]},
+                            "operator": {"type": "string", "enum": ["ALL", "ANY", "NONE"]},
                             "goals": {
                                 "type": "array",
                                 "items": {
                                     "type": "object",
                                     "properties": {
-                                        "goal_id": {"type": "integer"},
-                                        "membership_life_span": {"type": "integer", "description": "Days (1-540)"},
+                                        "goal_id": {"type": "integer", "description": "Raw ExternalId (Metrika goal/segment, interest, or Audience segment id + 2e9)"},
+                                        "audience_segment_id": {"type": "integer", "description": "Yandex Audience segment ID as-is (encoded to ExternalId automatically)"},
+                                        "membership_life_span": {"type": "integer", "description": "Days (1-540); ignored for segments"},
                                     },
-                                    "required": ["goal_id", "membership_life_span"],
+                                    "anyOf": [
+                                        {"required": ["goal_id"]},
+                                        {"required": ["audience_segment_id"]},
+                                    ],
                                 },
                             },
                         },

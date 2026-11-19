@@ -93,6 +93,7 @@ from tools_direct_extra import (
     register_extra_direct_handlers,
     client_login_var,
     annotate_partial,
+    retargeting_rule_payload,
     set_log_bodies,
     set_direct_tokens,
     direct_headers,
@@ -144,14 +145,19 @@ async def _api501(client: httpx.AsyncClient, service: str, method: str, params: 
 
 # ── Access control ─────────────────────────────────────────────────────
 
-_MUTATING_TOKENS = ("_add", "_create", "_update", "_delete", "_action",
-                    "_set", "_toggle", "_link", "_unlink", "_upload",
-                    "_suspend", "_resume", "_confirm", "_reprocess", "_undelete")
+_MUTATING_SEGMENTS = frozenset((
+    "add", "create", "update", "delete", "action", "set", "toggle", "link", "unlink",
+    "upload", "suspend", "resume", "confirm", "reprocess", "undelete",
+))
 
 
 def _is_mutating(name: str) -> bool:
-    """True for any tool that changes state (create/update/delete/action/...)."""
-    return any(t in name for t in _MUTATING_TOKENS)
+    """True for any tool that changes state (create/update/delete/action/...).
+
+    Matches whole underscore-separated segments: "yd_negative_keywords_sets_get"
+    contains "sets" (read-only), not the mutating "set".
+    """
+    return any(segment in _MUTATING_SEGMENTS for segment in name.split("_"))
 
 
 _AUDIENCE_NAMES = frozenset(t.name for t in AUDIENCE_TOOLS)
@@ -170,12 +176,36 @@ def _deny(reason: str):
     return [TextContent(type="text", text=json.dumps({"denied": True, "reason": reason}, ensure_ascii=False))]
 
 
+_PREVIEW_REDACT_KEYS = frozenset((
+    "image_data", "content", "conversions", "calls", "expenses", "users", "password",
+))
+_PREVIEW_MAX_STRING = 500
+
+
+def _preview_value(key: str, value):
+    if key in _PREVIEW_REDACT_KEYS:
+        size = len(value) if isinstance(value, (list, str, bytes)) else 1
+        return f"<omitted: {size} item(s)>"
+    if isinstance(value, dict):
+        return {k: _preview_value(k, v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_preview_value(key, item) for item in value]
+    if isinstance(value, str) and len(value) > _PREVIEW_MAX_STRING:
+        return f"{value[:_PREVIEW_MAX_STRING]}… <{len(value)} chars total>"
+    return value
+
+
+def _preview_arguments(arguments: dict) -> dict:
+    """Return a redacted copy of arguments for the YD_CONFIRM preview."""
+    return {key: _preview_value(key, value) for key, value in arguments.items()}
+
+
 def _confirm_preview(name: str, arguments: dict, login: str):
     preview = {
         "confirm_required": True,
         "tool": name,
         "client_login": login or None,
-        "arguments": arguments,
+        "arguments": _preview_arguments(arguments),
         "note": "Mutating operation and YD_CONFIRM is enabled. Re-call this tool with confirm=true to execute.",
     }
     return [TextContent(type="text", text=json.dumps(preview, indent=2, ensure_ascii=False))]
@@ -624,7 +654,8 @@ TOOLS = [
     ),
     Tool(
         name="yd_keyword_bids_set_auto",
-        description="Set automatic bidding for keywords based on target position or other criteria.",
+        description="Set automatic bids: search by target traffic volume, network by target coverage. "
+                    "At least one of target_traffic_volume / target_coverage is required.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -633,13 +664,22 @@ TOOLS = [
                     "items": {
                         "type": "object",
                         "properties": {
-                            "keyword_id": {"type": "integer"},
-                            "scope": {"type": "string", "enum": ["SEARCH", "NETWORK", "SEARCH_AND_NETWORK"]},
-                            "position": {"type": "string", "enum": ["PREMIUMBLOCK", "FOOTERBLOCK", "P11", "P12", "P13", "P14", "P21", "P22", "P23", "P24"], "description": "Target position"},
-                            "max_bid": {"type": "number", "description": "Max bid in rubles"},
-                            "increase_percent": {"type": "integer", "description": "Max increase percent (0-1200)"},
+                            "keyword_id": {"type": "integer", "description": "Keyword ID (or use campaign_id/ad_group_id)"},
+                            "campaign_id": {"type": "integer"},
+                            "ad_group_id": {"type": "integer"},
+                            "target_traffic_volume": {"type": "integer", "minimum": 1, "maximum": 100,
+                                                      "description": "Desired search traffic volume, percent (1-100)"},
+                            "target_coverage": {"type": "integer", "minimum": 1, "maximum": 100,
+                                                "description": "Desired network coverage, percent (1-100)"},
+                            "increase_percent": {"type": "integer", "minimum": 0, "maximum": 1200,
+                                                 "description": "Max bid increase percent (0-1200)"},
+                            "bid_ceiling": {"type": "number", "description": "Max bid in rubles"},
                         },
-                        "required": ["keyword_id"],
+                        "anyOf": [
+                            {"required": ["keyword_id"]},
+                            {"required": ["campaign_id"]},
+                            {"required": ["ad_group_id"]},
+                        ],
                     },
                 },
             },
@@ -968,6 +1008,10 @@ TOOLS = [
                                                                                "automatically; alternative to goal_id)"},
                                         "membership_life_span": {"type": "integer", "description": "Days (1-540). Required for Metrika goals; ignored for Metrika/Audience segments"},
                                     },
+                                    "anyOf": [
+                                        {"required": ["goal_id"]},
+                                        {"required": ["audience_segment_id"]},
+                                    ],
                                 },
                             },
                         },
@@ -1334,7 +1378,7 @@ async def _handle_campaigns_add(client, args):
             "Amount": _rubles_to_micros(args["daily_budget_amount"]),
             "Mode": args.get("daily_budget_mode", "DISTRIBUTED"),
         }
-    if neg := args.get("negative_keywords"):
+    if (neg := args.get("negative_keywords")) is not None:
         campaign["NegativeKeywords"] = {"Items": neg}
 
     weekly_limit = _rubles_to_micros(args["weekly_spend_limit"]) if args.get("weekly_spend_limit") else None
@@ -1349,8 +1393,6 @@ async def _handle_campaigns_add(client, args):
         params = {}
         if weekly_limit:
             params["WeeklySpendLimit"] = weekly_limit
-        else:
-            params["WeeklySpendLimit"] = _rubles_to_micros(args.get("daily_budget_amount", 300) * 7)
         search_obj["WbMaximumClicks"] = params
 
     elif search_strategy == "PAY_FOR_CONVERSION":
@@ -1452,7 +1494,7 @@ async def _handle_campaigns_update(client, args):
             "Amount": _rubles_to_micros(args["daily_budget_amount"]),
             "Mode": args.get("daily_budget_mode", "DISTRIBUTED"),
         }
-    if neg := args.get("negative_keywords"):
+    if (neg := args.get("negative_keywords")) is not None:
         campaign["NegativeKeywords"] = {"Items": neg}
     if end_date := args.get("end_date"):
         campaign["EndDate"] = end_date
@@ -1682,10 +1724,10 @@ async def _handle_bids_set(client, args):
     bids = []
     for b in args["bids"]:
         item = {"KeywordId": b["keyword_id"]}
-        if bid := b.get("search_bid"):
-            item["SearchBid"] = _rubles_to_micros(bid)
-        if bid := b.get("network_bid"):
-            item["NetworkBid"] = _rubles_to_micros(bid)
+        if (bid := b.get("search_bid")) is not None:
+            item["Bid"] = _rubles_to_micros(bid)
+        if (bid := b.get("network_bid")) is not None:
+            item["ContextBid"] = _rubles_to_micros(bid)
         bids.append(item)
     data = await _api(client, "bids", "set", {"Bids": bids})
     return _result(data.get("result", data))
@@ -1719,8 +1761,10 @@ async def _handle_report(client, args):
     headers["returnMoneyInMicros"] = "false"
 
     # Reports can be async — poll until ready
-    for attempt in range(30):
-        resp = await client.post(url, headers=headers, json=body, timeout=120)
+    for _ in range(30):
+        resp = await request_with_retry(client, url, headers=headers, json_body=body, timeout=120)
+        log_units(resp)
+        _log_body("REPORT RESPONSE %s: %s", resp.status_code, resp.text[:2000])
         if resp.status_code == 200:
             return [TextContent(type="text", text=resp.text)]
         elif resp.status_code == 201:
@@ -1769,7 +1813,9 @@ async def _handle_keyword_bids_get(client, args):
         criteria["Ids"] = ids
     params = {
         "SelectionCriteria": criteria,
-        "FieldNames": ["KeywordId", "AdGroupId", "CampaignId", "SearchBid", "NetworkBid", "CurrentSearchPrice", "MinSearchPrice"],
+        "FieldNames": ["KeywordId", "AdGroupId", "CampaignId"],
+        "SearchFieldNames": ["Bid", "AutotargetingSearchBidIsAuto"],
+        "NetworkFieldNames": ["Bid"],
     }
     data = await _api(client, "keywordbids", "get", params)
     return _result(data.get("result", data))
@@ -1791,17 +1837,31 @@ async def _handle_keyword_bids_set(client, args):
 async def _handle_keyword_bids_set_auto(client, args):
     bids = []
     for b in args["bids"]:
-        item = {"KeywordId": b["keyword_id"]}
-        auto = {}
-        if scope := b.get("scope"):
-            auto["Scope"] = [scope]
-        if pos := b.get("position"):
-            auto["Position"] = pos
-        if mb := b.get("max_bid"):
-            auto["MaxBid"] = _rubles_to_micros(mb)
-        if inc := b.get("increase_percent"):
-            auto["IncreasePercent"] = inc
-        item["SearchAutoStrategy"] = auto
+        item = {}
+        for source, target in (("campaign_id", "CampaignId"),
+                               ("ad_group_id", "AdGroupId"),
+                               ("keyword_id", "KeywordId")):
+            if b.get(source) is not None:
+                item[target] = b[source]
+
+        rule = {}
+        if b.get("target_traffic_volume") is not None:
+            search = {"TargetTrafficVolume": b["target_traffic_volume"]}
+            if b.get("increase_percent") is not None:
+                search["IncreasePercent"] = b["increase_percent"]
+            if b.get("bid_ceiling") is not None:
+                search["BidCeiling"] = _rubles_to_micros(b["bid_ceiling"])
+            rule["SearchByTrafficVolume"] = search
+        if b.get("target_coverage") is not None:
+            network = {"TargetCoverage": b["target_coverage"]}
+            if b.get("increase_percent") is not None:
+                network["IncreasePercent"] = b["increase_percent"]
+            if b.get("bid_ceiling") is not None:
+                network["BidCeiling"] = _rubles_to_micros(b["bid_ceiling"])
+            rule["NetworkByCoverage"] = network
+        if not rule:
+            raise ValueError("A bid needs target_traffic_volume and/or target_coverage")
+        item["BiddingRule"] = rule
         bids.append(item)
     data = await _api(client, "keywordbids", "setAuto", {"KeywordBids": bids})
     return _result(data.get("result", data))
@@ -1815,11 +1875,11 @@ async def _handle_bid_modifiers_add(client, args):
         modifier["CampaignId"] = cid
     if gid := args.get("ad_group_id"):
         modifier["AdGroupId"] = gid
-    if mob := args.get("mobile_adjustment"):
+    if (mob := args.get("mobile_adjustment")) is not None:
         modifier["MobileAdjustment"] = {"BidModifier": mob}
-    if desk := args.get("desktop_adjustment"):
+    if (desk := args.get("desktop_adjustment")) is not None:
         modifier["DesktopAdjustment"] = {"BidModifier": desk}
-    if tab := args.get("tablet_adjustment"):
+    if (tab := args.get("tablet_adjustment")) is not None:
         modifier["TabletAdjustment"] = {"BidModifier": tab}
     if demos := args.get("demographics"):
         modifier["DemographicsAdjustments"] = [
@@ -1917,7 +1977,7 @@ async def _handle_neg_kw_sets_update(client, args):
     item = {"Id": args["id"]}
     if name := args.get("name"):
         item["Name"] = name
-    if nk := args.get("negative_keywords"):
+    if (nk := args.get("negative_keywords")) is not None:
         item["NegativeKeywords"] = nk
     data = await _api(client, "negativekeywordsharedsets", "update", {"NegativeKeywordSharedSets": [item]})
     return _result(data.get("result", data))
@@ -1966,7 +2026,8 @@ async def _handle_ad_extensions_add(client, args):
 async def _handle_ad_extensions_get(client, args):
     params = {
         "SelectionCriteria": {"Ids": args["ids"]},
-        "FieldNames": ["Id", "Type", "Callout", "Status"],
+        "FieldNames": ["Id", "Type", "Status"],
+        "CalloutFieldNames": ["CalloutText"],
     }
     data = await _api(client, "adextensions", "get", params)
     return _result(data.get("result", data))
@@ -1995,12 +2056,16 @@ async def _handle_changes_check(client, args):
 async def _handle_audience_targets_add(client, args):
     targets = []
     for t in args["targets"]:
+        has_list = t.get("retargeting_list_id") is not None
+        has_interest = t.get("interest_id") is not None
+        if has_list == has_interest:
+            raise ValueError("Each target needs exactly one of retargeting_list_id or interest_id")
         item = {"AdGroupId": t["ad_group_id"]}
-        if rl := t.get("retargeting_list_id"):
-            item["RetargetingListId"] = rl
-        if ii := t.get("interest_id"):
-            item["InterestId"] = ii
-        if cb := t.get("context_bid"):
+        if has_list:
+            item["RetargetingListId"] = t["retargeting_list_id"]
+        if has_interest:
+            item["InterestId"] = t["interest_id"]
+        if (cb := t.get("context_bid")) is not None:
             item["ContextBid"] = _rubles_to_micros(cb)
         if sp := t.get("strategy_priority"):
             item["StrategyPriority"] = sp
@@ -2032,25 +2097,10 @@ async def _handle_audience_targets_delete(client, args):
 
 # ── RetargetingLists ──────────────────────────────────────────────────
 
-_AUDIENCE_SEGMENT_ID_OFFSET = 2_000_000_000  # Direct encodes Audience segments as id + 2e9
-
-
 async def _handle_retargeting_lists_add(client, args):
-    rules = []
-    for r in args["rules"]:
-        arguments = []
-        for g in r["goals"]:
-            if g.get("audience_segment_id") is not None:
-                arg = {"ExternalId": _AUDIENCE_SEGMENT_ID_OFFSET + g["audience_segment_id"]}
-            else:
-                arg = {"ExternalId": g["goal_id"]}
-            if g.get("membership_life_span") is not None:
-                arg["MembershipLifeSpan"] = g["membership_life_span"]
-            arguments.append(arg)
-        rules.append({"Operator": r["operator"], "Arguments": arguments})
     item = {
         "Name": args["name"],
-        "Rules": rules,
+        "Rules": retargeting_rule_payload(args["rules"]),
     }
     if t := args.get("type"):
         item["Type"] = t
@@ -2119,8 +2169,15 @@ async def _handle_businesses_get(client, args):
 
 async def _handle_direct_accounts_get(client, args):
     """Probe every configured Direct token with Clients.get (ignores client_login)."""
+    entries = []
+    if not ALLOWED_LOGINS or not LOGIN or LOGIN in ALLOWED_LOGINS:
+        entries.append(("YD_OAUTH_TOKEN", TOKEN))
+    for login, token in DIRECT_TOKENS.items():
+        if ALLOWED_LOGINS and login not in ALLOWED_LOGINS:
+            continue
+        entries.append((f"YD_DIRECT_TOKENS:{login}", token))
     accounts = []
-    for source, token in [("YD_OAUTH_TOKEN", TOKEN)] + list(DIRECT_TOKENS.items()):
+    for source, token in entries:
         headers = {"Authorization": f"Bearer {token}", "Accept-Language": "ru",
                    "Content-Type": "application/json"}
         if source == "YD_OAUTH_TOKEN" and LOGIN and LOGIN not in DIRECT_TOKENS:
@@ -2164,10 +2221,9 @@ async def _get_iam_token(client: httpx.AsyncClient) -> str:
     now = time.time()
     if _iam_token_cache["token"] and _iam_token_cache["expires"] > now + 300:
         return _iam_token_cache["token"]
-    resp = await client.post(
-        "https://iam.api.cloud.yandex.net/iam/v1/tokens",
-        json={"yandexPassportOauthToken": TOKEN},
-        timeout=30,
+    resp = await request_with_retry(
+        client, "https://iam.api.cloud.yandex.net/iam/v1/tokens",
+        json_body={"yandexPassportOauthToken": TOKEN}, timeout=30,
     )
     data = resp.json()
     if "iamToken" not in data:
@@ -2191,12 +2247,12 @@ async def _wordstat_request(client: httpx.AsyncClient, endpoint: str, body: dict
         "Content-Type": "application/json",
     }
     _log_body("WORDSTAT REQUEST %s: %s", url, json.dumps(body, ensure_ascii=False)[:2000])
-    resp = await client.post(url, headers=headers, json=body, timeout=60)
+    resp = await request_with_retry(client, url, headers=headers, json_body=body, timeout=60)
     _log_body("WORDSTAT RESPONSE %s: %s", resp.status_code, resp.text[:2000])
     if resp.status_code == 429:
-        raise Exception(f"Wordstat rate limit exceeded (429). Retry later.")
+        raise Exception("Wordstat rate limit exceeded (429). Retry later.")
     if resp.status_code == 503:
-        raise Exception(f"Wordstat global quota exceeded (503).")
+        raise Exception("Wordstat global quota exceeded (503).")
     if resp.status_code != 200:
         raise Exception(f"Wordstat error {resp.status_code}: {resp.text[:500]}")
     return resp.json()

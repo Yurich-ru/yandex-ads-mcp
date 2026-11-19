@@ -1,24 +1,26 @@
-"""Yandex Metrika tools for MCP server. 43 tools total."""
+"""Yandex Metrika tools for MCP server. 44 tools total."""
 
+import csv
+import io
 import json
-import httpx
+
 from mcp.types import Tool, TextContent
+
+from tools_direct_extra import request_with_retry
 
 BASE_URL = "https://api-metrika.yandex.net"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
-async def _metrika_api(client, method, path, token, params=None, body=None):
-    """Call Metrika API."""
+async def _metrika_api(client, method, path, token, params=None, body=None, files=None):
+    """Call Metrika API with retry on transient errors."""
     url = f"{BASE_URL}{path}"
     headers = {"Authorization": f"OAuth {token}"}
-    kwargs = {"headers": headers, "timeout": 30}
-    if params:
-        kwargs["params"] = params
-    if body:
-        kwargs["json"] = body
-    resp = await getattr(client, method.lower())(url, **kwargs)
+    resp = await request_with_retry(
+        client, url, method=method.upper(), headers=headers,
+        params=params, json_body=body, files=files, timeout=60,
+    )
     if resp.status_code == 204:
         return {"success": True}
     if resp.status_code >= 400:
@@ -70,6 +72,43 @@ async def _crud_update(client, token, path, body):
 
 async def _crud_delete(client, token, path):
     return _result(await _metrika_api(client, "delete", path, token))
+
+
+def _csv_bytes(rows, columns=None):
+    """Serialize a list of dicts to UTF-8 CSV; keeps only non-empty known columns."""
+    rows = [dict(row) for row in rows]
+    if columns is None:
+        columns = []
+        for row in rows:
+            for key in row:
+                if key not in columns:
+                    columns.append(key)
+    else:
+        present = {
+            key for row in rows for key, value in row.items()
+            if value is not None and value != ""
+        }
+        columns = [column for column in columns if column in present]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore", lineterminator="\n")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({column: "" if row.get(column) is None else row.get(column) for column in columns})
+    return buffer.getvalue().encode("utf-8")
+
+
+CONVERSION_COLUMNS = [
+    "Target", "DateTime", "UserId", "ClientId", "Yclid", "PurchaseId", "Price", "Currency",
+]
+CALL_COLUMNS = [
+    "UserId", "ClientId", "Yclid", "DateTime", "StaticCall", "Price", "Currency",
+    "PhoneNumber", "TalkDuration", "HoldDuration", "CallMissed", "Tag",
+    "FirstTimeCaller", "URL", "CallTrackerURL",
+]
+EXPENSE_COLUMNS = [
+    "Date", "UTMSource", "TrafficSource", "TrafficSourceDetail", "UTMMedium",
+    "UTMCampaign", "UTMTerm", "UTMContent", "Expenses", "Currency", "Clicks",
+]
 
 
 # ── Tool definitions ─────────────────────────────────────────────────
@@ -222,29 +261,39 @@ METRIKA_TOOLS = [
         "parent_id": _prop_str("Parent row ID for drilldown"),
     }, ["counter_id", "metrics", "dimensions"]),
 
-    # ── OFFLINE DATA (5) ─────────────────────────────────────────────
-    _tool("yd_metrika_upload_conversions", "Upload offline conversions.", {
+    # ── OFFLINE DATA (6) ─────────────────────────────────────────────
+    _tool("yd_metrika_upload_conversions",
+          "Upload offline conversions as CSV. Rows: Target, DateTime (Unix), and at least one of "
+          "UserId/ClientId/Yclid/PurchaseId; optional Price, Currency.", {
         **_prop_counter(),
-        "conversions": {"type": "array", "items": {"type": "object"}, "description": "Array of conversions: [{DateTime, Target, ClientId?, Price?}]"},
-        "client_id_type": _prop_str("CLIENT_ID or USER_ID (default CLIENT_ID)"),
+        "conversions": {"type": "array", "items": {"type": "object"}, "description": "Array of conversions: [{Target, DateTime, ClientId|UserId|Yclid|PurchaseId, Price?, Currency?}]"},
     }, ["counter_id", "conversions"]),
     _tool("yd_metrika_conversions_status", "Get offline conversions upload status.", {
         **_prop_counter(),
     }, ["counter_id"]),
-    _tool("yd_metrika_upload_calls", "Upload offline calls.", {
+    _tool("yd_metrika_upload_calls",
+          "Upload offline calls as CSV. Rows: DateTime (Unix) and at least one of "
+          "UserId/ClientId/Yclid; optional Price, Currency, PhoneNumber, durations, CallMissed, Tag, URLs.", {
         **_prop_counter(),
-        "calls": {"type": "array", "items": {"type": "object"}, "description": "Array of call data"},
-        "client_id_type": _prop_str("CLIENT_ID or USER_ID (default CLIENT_ID)"),
+        "calls": {"type": "array", "items": {"type": "object"}, "description": "Array of call rows with Metrika CSV column names"},
     }, ["counter_id", "calls"]),
-    _tool("yd_metrika_upload_expenses", "Upload advertising expenses.", {
+    _tool("yd_metrika_upload_expenses",
+          "Upload advertising expenses as CSV. Required: Date, Expenses; plus UTMSource or TrafficSource.", {
         **_prop_counter(),
-        "expenses": {"type": "array", "items": {"type": "object"}, "description": "Array of expense data"},
+        "expenses": {"type": "array", "items": {"type": "object"}, "description": "Array of expense rows: {Date, UTMSource|TrafficSource, Expenses, ...}"},
     }, ["counter_id", "expenses"]),
-    _tool("yd_metrika_upload_user_params", "Upload user parameters.", {
+    _tool("yd_metrika_upload_user_params",
+          "Upload visitor parameters as CSV (column names become CSV headers). "
+          "Returns an uploading ID; confirm it with yd_metrika_confirm_user_params.", {
         **_prop_counter(),
-        "users": {"type": "array", "items": {"type": "object"}, "description": "Array of user data"},
-        "client_id_type": _prop_str("CLIENT_ID or USER_ID (default CLIENT_ID)"),
+        "users": {"type": "array", "items": {"type": "object"}, "description": "Array of rows; object keys become CSV columns"},
+        "action": {"type": "string", "enum": ["update", "delete_keys"], "description": "update = add parameters, delete_keys = remove them"},
     }, ["counter_id", "users"]),
+    _tool("yd_metrika_confirm_user_params", "Confirm an uploaded user-parameters file.", {
+        **_prop_counter(),
+        "uploading_id": _prop_int("Uploading ID returned by yd_metrika_upload_user_params"),
+        "action": {"type": "string", "enum": ["update", "delete_keys"]},
+    }, ["counter_id", "uploading_id"]),
 
     # ── LABELS (4) ───────────────────────────────────────────────────
     _tool("yd_metrika_labels_get", "List all labels."),
@@ -328,9 +377,11 @@ def register_metrika_handlers(dispatch: dict, token: str):
     async def counter_update(client, args, _token=token):
         cid = args["counter_id"]
         counter = {}
-        for k in ("name", "site", "favorite"):
+        for k in ("name", "favorite"):
             if args.get(k) is not None:
                 counter[k] = args[k]
+        if args.get("site") is not None:
+            counter["site2"] = {"site": args["site"]}
         return await _crud_update(client, _token, f"/management/v1/counter/{cid}", {"counter": counter})
 
     async def counter_delete(client, args, _token=token):
@@ -486,28 +537,41 @@ def register_metrika_handlers(dispatch: dict, token: str):
 
     async def upload_conversions(client, args, _token=token):
         cid = args["counter_id"]
-        ctype = args.get("client_id_type", "CLIENT_ID")
-        path = f"/management/v1/counter/{cid}/offline_conversions/upload?client_id_type={ctype}"
-        return await _crud_create(client, _token, path, {"conversions": args["conversions"]})
+        payload = _csv_bytes(args["conversions"], CONVERSION_COLUMNS)
+        return _result(await _metrika_api(
+            client, "post", f"/management/v1/counter/{cid}/offline_conversions/upload", _token,
+            files={"file": ("offline-conversions.csv", payload, "text/csv")}))
 
     async def conversions_status(client, args, _token=token):
         return await _crud_list(client, _token, f"/management/v1/counter/{args['counter_id']}/offline_conversions/uploadings")
 
     async def upload_calls(client, args, _token=token):
         cid = args["counter_id"]
-        ctype = args.get("client_id_type", "CLIENT_ID")
-        path = f"/management/v1/counter/{cid}/offline_conversions/calls/upload?client_id_type={ctype}"
-        return await _crud_create(client, _token, path, {"calls": args["calls"]})
+        payload = _csv_bytes(args["calls"], CALL_COLUMNS)
+        return _result(await _metrika_api(
+            client, "post", f"/management/v1/counter/{cid}/offline_conversions/upload_calls", _token,
+            files={"file": ("calls.csv", payload, "text/csv")}))
 
     async def upload_expenses(client, args, _token=token):
         cid = args["counter_id"]
-        return await _crud_create(client, _token, f"/management/v1/counter/{cid}/expense/upload", {"expenses": args["expenses"]})
+        payload = _csv_bytes(args["expenses"], EXPENSE_COLUMNS)
+        return _result(await _metrika_api(
+            client, "post", f"/management/v1/counter/{cid}/expense/upload", _token,
+            files={"file": ("expenses.csv", payload, "text/csv")}))
 
     async def upload_user_params(client, args, _token=token):
         cid = args["counter_id"]
-        ctype = args.get("client_id_type", "CLIENT_ID")
-        path = f"/management/v1/counter/{cid}/user_params/uploadings?client_id_type={ctype}"
-        return await _crud_create(client, _token, path, {"users": args["users"]})
+        payload = _csv_bytes(args["users"])
+        return _result(await _metrika_api(
+            client, "post", f"/management/v1/counter/{cid}/user_params/uploadings/upload", _token,
+            params={"action": args.get("action", "update")},
+            files={"file": ("user-params.csv", payload, "text/csv")}))
+
+    async def confirm_user_params(client, args, _token=token):
+        cid, uid = args["counter_id"], args["uploading_id"]
+        return _result(await _metrika_api(
+            client, "post", f"/management/v1/counter/{cid}/user_params/uploading/{uid}/confirm", _token,
+            body={"uploading": {"id": uid, "action": args.get("action", "update")}}))
 
     # ── LABELS ───────────────────────────────────────────────────────
 
@@ -609,6 +673,7 @@ def register_metrika_handlers(dispatch: dict, token: str):
         "yd_metrika_upload_calls": upload_calls,
         "yd_metrika_upload_expenses": upload_expenses,
         "yd_metrika_upload_user_params": upload_user_params,
+        "yd_metrika_confirm_user_params": confirm_user_params,
         # Labels
         "yd_metrika_labels_get": labels_get,
         "yd_metrika_label_create": label_create,
