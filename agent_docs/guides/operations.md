@@ -14,8 +14,9 @@
 - Как поднять: сервер stdio, его запускает ассистент по конфигу `mcpServers` (README «Быстрый старт»).
   Проверка импорта руками: `YD_OAUTH_TOKEN=x venv/bin/python -c "import server"`.
 - Зависимости/окружение: `python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt`;
-  в репозитории venv уже есть (`venv/`, gitignored). Интерпретатор — `python3` (≥ 3.10).
-- Тесты: `venv/bin/python test_safety.py` — офлайн, без токенов и сети; сейчас 111 проверок зелёные.
+  venv создаётся локально (`venv/`, gitignored). Интерпретатор — `python3` (≥ 3.10).
+- Тесты: `venv/bin/python test_safety.py` — офлайн, без токенов и сети; сейчас 179 проверок зелёные.
+  CI дополнительно собирает wheel и проверяет, что в нём лежат все четыре модуля.
 
 ## Деплой
 

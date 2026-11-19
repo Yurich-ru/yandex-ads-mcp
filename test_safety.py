@@ -12,6 +12,7 @@ Run: python3 test_safety.py
 """
 import os
 import sys
+import json
 import asyncio
 
 # Token must be present for the module to import cleanly under some setups.
@@ -38,7 +39,7 @@ def check(name, cond):
 print("== mutating classification ==")
 MUTATING = [
     "yd_campaigns_add", "yd_campaigns_update", "yd_campaigns_action",
-    "yd_ads_update", "yd_keyword_bids_set_auto", "yd_bid_modifiers_toggle",
+    "yd_ads_update", "yd_keyword_bids_set_auto", "yd_bid_modifiers_add",
     "yd_callouts_link", "yd_metrika_label_link", "yd_metrika_goal_delete",
     "yd_metrika_grant_add", "yd_metrika_upload_conversions", "yd_videos_upload",
     "yd_excluded_sites_update", "yd_blocked_ips_update", "yd_campaign_strategy_update",
@@ -50,21 +51,38 @@ MUTATING = [
     "yd_audience_segment_reprocess", "yd_audience_segment_create_lookalike",
     "yd_audience_grant_add", "yd_audience_grant_delete",
     "yd_audience_pixel_undelete", "yd_audience_delegate_add",
+    "yd_metrika_confirm_user_params",
 ]
+# Explicit allowlist of read-only tools: a new read-only tool must be added here,
+# otherwise the exhaustive check below fails instead of silently blocking reads.
 READONLY = [
-    "yd_campaigns_get", "yd_keywords_research", "yd_keywords_has_volume",
-    "yd_report", "yd_changes_check", "yd_wordstat_top_requests",
-    "yd_wordstat_regions_tree", "yd_metrika_report", "yd_metrika_report_comparison",
-    "yd_metrika_counters_get", "yd_metrika_conversions_status",
-    "yd_excluded_sites_get", "yd_regions_get", "yd_interests_get",
-    "yd_changes_timestamp_get",
-    "yd_audience_segments_get", "yd_audience_pixels_get",
-    "yd_audience_grants_get", "yd_audience_accounts_get", "yd_audience_delegates_get",
+    "yd_ad_extensions_get", "yd_ad_images_get", "yd_adgroups_get", "yd_ads_get",
+    "yd_audience_accounts_get", "yd_audience_delegates_get", "yd_audience_grants_get",
+    "yd_audience_pixels_get", "yd_audience_segments_get", "yd_audience_targets_get",
+    "yd_bid_modifiers_get", "yd_businesses_get", "yd_campaigns_get", "yd_changes_check",
+    "yd_changes_timestamp_get", "yd_clients_get", "yd_creatives_get", "yd_dictionaries",
+    "yd_direct_accounts_get", "yd_excluded_sites_get", "yd_feeds_get", "yd_interests_get",
+    "yd_keyword_bids_get", "yd_keywords_get", "yd_keywords_has_volume", "yd_keywords_research",
+    "yd_metrika_annotations_get", "yd_metrika_conversions_status", "yd_metrika_counter_get",
+    "yd_metrika_counters_get", "yd_metrika_delegates_get", "yd_metrika_filters_get",
+    "yd_metrika_goals_get", "yd_metrika_grants_get", "yd_metrika_labels_get",
+    "yd_metrika_report", "yd_metrika_report_by_time", "yd_metrika_report_comparison",
+    "yd_metrika_report_drilldown", "yd_metrika_segments_get",
+    "yd_negative_keywords_sets_get", "yd_regions_get", "yd_report",
+    "yd_retargeting_lists_get", "yd_sitelinks_get", "yd_smart_targets_get", "yd_vcards_get",
+    "yd_videos_get", "yd_wordstat_dynamics", "yd_wordstat_regions",
+    "yd_wordstat_regions_tree", "yd_wordstat_top_requests", "yd_wordstat_user_info",
 ]
+all_tools = server.TOOLS + server.METRIKA_TOOLS + server.EXTRA_DIRECT_TOOLS + server.AUDIENCE_TOOLS
+all_names = {tool.name for tool in all_tools}
 for n in MUTATING:
     check(f"{n} is mutating", server._is_mutating(n) is True)
 for n in READONLY:
     check(f"{n} is read-only", server._is_mutating(n) is False)
+check("read-only allowlist has no unknown tools", set(READONLY) <= all_names)
+check("every tool is classified escaping the read-only allowlist",
+      {n for n in all_names if not server._is_mutating(n)} == set(READONLY))
+check("removed non-existent bidmodifiers.toggle tool", "yd_bid_modifiers_toggle" not in all_names)
 
 print("== direct vs metrika/wordstat/audience ==")
 check("yd_campaigns_add is direct", server._is_direct("yd_campaigns_add") is True)
@@ -107,13 +125,14 @@ check("no log file written by default", server.LOG_FILE == "" and
 
 print("== partial-success annotation ==")
 ok = annotate_partial({"result": {"AddResults": [{"Id": 1}]}})
-check("clean result has no _partial_success", "_partial_success" not in ok)
+check("clean result has no _partial_success",
+      "_partial_success" not in ok and "_partial_success" not in ok["result"])
 bad = annotate_partial({"result": {"AddResults": [
     {"Id": 1},
     {"Errors": [{"Code": 5, "Message": "Bad text"}]},
     {"Warnings": [{"Code": 9, "Message": "Truncated"}]},
 ]}})
-ps = bad.get("_partial_success", {})
+ps = bad.get("result", {}).get("_partial_success", {})
 check("errors detected", ps.get("error_count") == 1)
 check("warnings detected", ps.get("warning_count") == 1)
 check("ok flag false on error", ps.get("ok") is False)
@@ -336,6 +355,273 @@ fb = iam_expiry({}, now=1000)
 check("falls back to now+11h when no expiresAt", fb == 1000 + 11 * 3600)
 bad = iam_expiry({"expiresAt": "not-a-date"}, now=2000)
 check("falls back on unparseable value", bad == 2000 + 11 * 3600)
+
+print("== partial success survives handlers ==")
+async def partial_api(client, service, method, params):
+    return annotate_partial({"result": {"AddResults": [
+        {"Id": 1},
+        {"Errors": [{"Code": 5, "Message": "Bad text"}]},
+    ]}})
+
+original_api = server._api
+server._api = partial_api
+try:
+    out = asyncio.run(server._handle_campaigns_add(None, {"name": "n", "start_date": "2026-01-01"}))
+    partial_payload = json.loads(out[0].text)
+    partial = partial_payload.get("_partial_success", {})
+    check("handler keeps error count", partial.get("error_count") == 1)
+    check("handler keeps ok=false", partial.get("ok") is False)
+finally:
+    server._api = original_api
+
+print("== Direct payload contracts ==")
+payload_calls = []
+
+
+async def capture_api(client, service, method, params):
+    payload_calls.append((service, method, params))
+    return {"result": {}}
+
+
+original_api = server._api
+server._api = capture_api
+try:
+    asyncio.run(server._handle_bids_set(None, {"bids": [
+        {"keyword_id": 1, "search_bid": 1.5, "network_bid": 0.5},
+    ]}))
+    bids_item = payload_calls[-1][2]["Bids"][0]
+    check("bids set uses Bid/ContextBid",
+          bids_item.get("Bid") == 1500000 and bids_item.get("ContextBid") == 500000 and
+          "SearchBid" not in bids_item and "NetworkBid" not in bids_item)
+
+    asyncio.run(server._handle_keyword_bids_get(None, {"keyword_ids": [1]}))
+    kb_params = payload_calls[-1][2]
+    check("keyword bids get uses top-level fields",
+          kb_params["FieldNames"] == ["KeywordId", "AdGroupId", "CampaignId"])
+    check("keyword bids get uses SearchFieldNames/NetworkFieldNames",
+          kb_params["SearchFieldNames"] == ["Bid", "AutotargetingSearchBidIsAuto"] and
+          kb_params["NetworkFieldNames"] == ["Bid"])
+
+    asyncio.run(server._handle_keyword_bids_set_auto(None, {"bids": [{
+        "keyword_id": 1,
+        "target_traffic_volume": 50,
+        "increase_percent": 0,
+        "bid_ceiling": 2.5,
+    }]}))
+    auto_item = payload_calls[-1][2]["KeywordBids"][0]
+    auto_rule = auto_item.get("BiddingRule", {}).get("SearchByTrafficVolume", {})
+    check("setAuto uses BiddingRule/SearchByTrafficVolume",
+          auto_rule.get("TargetTrafficVolume") == 50 and
+          auto_rule.get("IncreasePercent") == 0 and
+          auto_rule.get("BidCeiling") == 2500000)
+    check("setAuto does not send legacy SearchAutoStrategy", "SearchAutoStrategy" not in auto_item)
+
+    asyncio.run(server._handle_bid_modifiers_add(None, {
+        "campaign_id": 1, "mobile_adjustment": 0,
+    }))
+    modifier_items = payload_calls[-1][2]["BidModifiers"][0]
+    check("bid modifiers keep zero adjustment",
+          modifier_items.get("MobileAdjustment") == {"BidModifier": 0})
+
+    asyncio.run(server._handle_campaigns_update(None, {
+        "campaign_id": 1, "negative_keywords": [],
+    }))
+    check("campaign update can clear negative keywords",
+          payload_calls[-1][2]["Campaigns"][0].get("NegativeKeywords") == {"Items": []})
+
+    asyncio.run(server._handle_ad_extensions_get(None, {"ids": [1]}))
+    ext_params = payload_calls[-1][2]
+    check("ad extensions get uses CalloutFieldNames",
+          ext_params["FieldNames"] == ["Id", "Type", "Status"] and
+          ext_params["CalloutFieldNames"] == ["CalloutText"])
+
+    asyncio.run(server._handle_retargeting_lists_add(None, {
+        "name": "n",
+        "rules": [{"operator": "ANY", "goals": [{"audience_segment_id": 555}]}],
+    }))
+    rule_arg = payload_calls[-1][2]["RetargetingLists"][0]["Rules"][0]["Arguments"][0]
+    check("retargeting add encodes Audience segment", rule_arg.get("ExternalId") == 2000000555)
+
+    missing_goal = False
+    try:
+        asyncio.run(server._handle_retargeting_lists_add(None, {
+            "name": "n",
+            "rules": [{"operator": "ANY", "goals": [{}]}],
+        }))
+    except ValueError:
+        missing_goal = True
+    check("retargeting add rejects goal without id", missing_goal)
+
+    both_targets = False
+    try:
+        asyncio.run(server._handle_audience_targets_add(None, {"targets": [{
+            "ad_group_id": 1, "retargeting_list_id": 2, "interest_id": 3,
+        }]}))
+    except ValueError:
+        both_targets = True
+    check("audience target rejects both list and interest", both_targets)
+finally:
+    server._api = original_api
+
+print("== extra Direct payload contracts ==")
+import tools_direct_extra as tde  # noqa: E402
+
+extra_calls = []
+
+
+async def capture_extra_api(client, service, method, params, **kwargs):
+    extra_calls.append((service, method, params))
+    return {"result": {}}
+
+
+original_extra_api = tde._api
+tde._api = capture_extra_api
+try:
+    asyncio.run(server._extra_dispatch["yd_creatives_get"](
+        None, {"creative_ids": [1]}, server._extra_config))
+    creative_params = extra_calls[-1][2]
+    check("creatives get uses type-specific field names",
+          creative_params["FieldNames"] == ["Id", "Type", "Name", "PreviewUrl"] and
+          creative_params["VideoExtensionCreativeFieldNames"] == ["Duration"])
+
+    asyncio.run(server._extra_dispatch["yd_feeds_get"](
+        None, {"feed_ids": [1]}, server._extra_config))
+    feed_params = extra_calls[-1][2]
+    check("feeds get keeps UrlFeed out of FieldNames",
+          "UrlFeed" not in feed_params["FieldNames"] and
+          feed_params["UrlFeedFieldNames"] == ["Url", "Login", "RemoveUtmTags"])
+
+    asyncio.run(server._extra_dispatch["yd_videos_get"](
+        None, {"video_ids": ["abc"]}, server._extra_config))
+    video_params = extra_calls[-1][2]
+    check("videos get requests only Id/Status and string IDs",
+          video_params["FieldNames"] == ["Id", "Status"] and
+          video_params["SelectionCriteria"]["Ids"] == ["abc"])
+
+    asyncio.run(server._extra_dispatch["yd_retargeting_lists_update"](
+        None,
+        {"id": 1, "rules": [{"operator": "ALL", "goals": [{"audience_segment_id": 777}]}]},
+        server._extra_config))
+    update_arg = extra_calls[-1][2]["RetargetingLists"][0]["Rules"][0]
+    check("retargeting update uses ALL operator and encodes segment",
+          update_arg["Operator"] == "ALL" and
+          update_arg["Arguments"][0]["ExternalId"] == 2000000777 and
+          "MembershipLifeSpan" not in update_arg["Arguments"][0])
+finally:
+    tde._api = original_extra_api
+
+print("== Metrika payload contracts ==")
+import tools_metrika as tm  # noqa: E402
+
+metrika_calls = []
+
+
+async def capture_metrika_api(client, method, path, token, params=None, body=None, files=None):
+    metrika_calls.append({"method": method, "path": path, "params": params, "body": body, "files": files})
+    return {}
+
+
+original_metrika_api = tm._metrika_api
+tm._metrika_api = capture_metrika_api
+try:
+    asyncio.run(server._metrika_dispatch["yd_metrika_counter_update"](
+        None, {"counter_id": 1, "site": "example.com"}))
+    check("counter update uses site2",
+          metrika_calls[-1]["body"] == {"counter": {"site2": {"site": "example.com"}}})
+
+    asyncio.run(server._metrika_dispatch["yd_metrika_upload_conversions"](
+        None, {"counter_id": 1, "conversions": [
+            {"Target": "order", "DateTime": 1700000000, "ClientId": "123"},
+        ]}))
+    conversion_call = metrika_calls[-1]
+    conversion_csv = conversion_call["files"]["file"][1].decode()
+    check("conversions upload posts multipart CSV",
+          conversion_call["path"].endswith("/offline_conversions/upload") and
+          conversion_csv.splitlines()[0] == "Target,DateTime,ClientId")
+    check("conversions upload includes the row", "order,1700000000,123" in conversion_csv)
+
+    asyncio.run(server._metrika_dispatch["yd_metrika_upload_calls"](
+        None, {"counter_id": 1, "calls": [
+            {"ClientId": "123", "DateTime": 1700000000, "PhoneNumber": "+70123"},
+        ]}))
+    check("calls upload uses the documented endpoint",
+          metrika_calls[-1]["path"].endswith("/offline_conversions/upload_calls"))
+
+    asyncio.run(server._metrika_dispatch["yd_metrika_upload_expenses"](
+        None, {"counter_id": 1, "expenses": [
+            {"Date": "2026-01-01", "UTMSource": "google", "Expenses": 100},
+        ]}))
+    check("expenses upload posts multipart CSV",
+          metrika_calls[-1]["path"].endswith("/expense/upload") and
+          metrika_calls[-1]["files"]["file"][1].decode().splitlines()[0] == "Date,UTMSource,Expenses")
+
+    asyncio.run(server._metrika_dispatch["yd_metrika_upload_user_params"](
+        None, {"counter_id": 1, "action": "update", "users": [
+            {"ClientId": "123", "key1": "v1"},
+        ]}))
+    user_call = metrika_calls[-1]
+    check("user params upload uses the documented endpoint and action",
+          user_call["path"].endswith("/user_params/uploadings/upload") and
+          user_call["params"] == {"action": "update"})
+
+    asyncio.run(server._metrika_dispatch["yd_metrika_confirm_user_params"](
+        None, {"counter_id": 1, "uploading_id": 42, "action": "update"}))
+    check("user params confirm posts uploading id and action",
+          metrika_calls[-1]["path"].endswith("/user_params/uploading/42/confirm") and
+          metrika_calls[-1]["body"] == {"uploading": {"id": 42, "action": "update"}})
+finally:
+    tm._metrika_api = original_metrika_api
+
+print("== confirm preview redaction ==")
+preview_text = server._confirm_preview("yd_test", {
+    "password": "s3cret",
+    "image_data": "A" * 1000,
+    "note": "n" * 600,
+    "images": [{"name": "hero", "image_data": "B" * 1000}],
+}, "")[0].text
+preview = json.loads(preview_text)
+check("preview redacts password", "s3cret" not in preview_text and
+      str(preview["arguments"]["password"]).startswith("<omitted"))
+check("preview redacts binary payloads", "A" * 1000 not in preview_text)
+check("preview redacts nested payloads", "B" * 1000 not in preview_text)
+check("preview truncates long strings", len(preview["arguments"]["note"]) < 600)
+
+print("== accounts probe respects allowlist ==")
+probe_calls = []
+
+
+class FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+async def fake_probe(client, url, *, method="POST", headers=None, json_body=None,
+                     params=None, files=None, timeout, max_attempts=4):
+    probe_calls.append(headers["Authorization"])
+    return FakeResponse({"result": {"Clients": [{"Login": "probed"}]}})
+
+
+original_probe = server.request_with_retry
+original_tokens = server.DIRECT_TOKENS
+original_allowed = server.ALLOWED_LOGINS
+server.request_with_retry = fake_probe
+server.DIRECT_TOKENS = {"allowed": "token-a", "blocked": "token-b"}
+server.ALLOWED_LOGINS = ["allowed"]
+try:
+    accounts_text = asyncio.run(server._handle_direct_accounts_get(None, {}))[0].text
+    accounts = json.loads(accounts_text)["accounts"]
+    configured = {entry["configured_as"] for entry in accounts}
+    check("accounts probe skips non-whitelisted token",
+          "YD_DIRECT_TOKENS:blocked" not in configured)
+    check("accounts probe includes whitelisted token",
+          "YD_DIRECT_TOKENS:allowed" in configured)
+finally:
+    server.request_with_retry = original_probe
+    server.DIRECT_TOKENS = original_tokens
+    server.ALLOWED_LOGINS = original_allowed
 
 print()
 if failures:

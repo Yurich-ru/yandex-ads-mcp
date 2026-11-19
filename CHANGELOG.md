@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.3.1 — 2026-11-19
+
+Полный аудит API-контрактов и безопасности. Все изменения проверены офлайн-тестами
+(`test_safety.py`: 179 проверок) и сборкой wheel; живых вызовов API не было.
+
+### Исправлено: частичный успех
+
+- `_partial_success` больше не теряется: маркер кладётся внутрь `result`, поэтому массовая
+  операция с отклонёнными элементами больше не выглядит успешной (INV-005).
+- Добавлен регрессионный тест на вывод обработчика, а не только на `annotate_partial()`.
+
+### Исправлено: контракты Яндекс Директа
+
+- `yd_keyword_bids_get`: `SearchBid`/`NetworkBid` заменены на `SearchFieldNames`/`NetworkFieldNames`.
+- `yd_keyword_bids_set_auto`: payload переведён на `BiddingRule` (`SearchByTrafficVolume` /
+  `NetworkByCoverage`), схема аргументов обновлена.
+- `yd_bids_set`: поля `Bid`/`ContextBid` вместо несуществующих `SearchBid`/`NetworkBid`.
+- `yd_creatives_get`, `yd_ad_extensions_get`, `yd_videos_get`, `yd_feeds_get`: исправлены
+  `FieldNames` и типоспецифичные `*FieldNames`; ID видео теперь строки.
+- `yd_retargeting_lists_update`: операторы `ALL/ANY/NONE`, поддержка `audience_segment_id`
+  с кодированием `+2e9`, `membership_life_span` больше не обязателен.
+- Удалён `yd_bid_modifiers_toggle`: метода `bidmodifiers.toggle` в API v5 нет.
+- Zero-value корректировки (`mobile_adjustment: 0` и др.) больше не теряются; пустой список
+  минус-фраз очищает набор, а не игнорируется.
+- `yd_campaigns_add` больше не подставляет скрытый недельный лимит 2100 ₽.
+
+### Исправлено: Яндекс Метрика
+
+- `yd_metrika_counter_update` отправляет адрес сайта в `site2`.
+- Офлайн-загрузки (`yd_metrika_upload_conversions`, `upload_calls`, `upload_expenses`,
+  `upload_user_params`) переведены на `multipart/form-data` с CSV и правильные пути.
+- Добавлен `yd_metrika_confirm_user_params` для подтверждения загрузки параметров.
+
+### Безопасность и надёжность
+
+- `YD_ALLOWED_LOGINS` теперь ограничивает и `yd_direct_accounts_get`.
+- Confirm-превью не показывает пароли, base64, PII-массивы и не раздувает контекст.
+- Проверяются размер и существование файлов в `yd_videos_upload` и `yd_audience_segment_upload`.
+- Retry/backoff на 429/5xx распространён на Метрику, Аудитории, Wordstat и отчёты Директа.
+- `yd_negative_keywords_sets_get` больше не считается мутирующим: классификация идёт по целым
+  сегментам имени, а тест проверяет все 152 инструмента.
+
+### Упаковка и документация
+
+- Исправлены `build-backend` и `py-modules`: `pip install .` собирает рабочий wheel с четырьмя модулями.
+- Добавлен `LICENSE` (MIT).
+- README: уточнено, что `.env` не читается сервером; обновлены счётчики инструментов и `YD_API_URL`.
+- CI собирает wheel и проверяет наличие модулей.
+
 ## 1.3.0 — 2026-09-14
 
 Внешний вклад: [@sev222](https://github.com/sev222), PR [#2](https://github.com/Yurich-ru/yandex-ads-mcp/pull/2). Спасибо!
