@@ -26,16 +26,21 @@ template: CLAUDE.md
 template: .editorconfig
 template: .claude/hooks/
 template: .agents/skills/handoff/
+template: .agents/skills/spec/
 template: .agents/skills/starter-upgrade/
 template: .claude/skills/handoff/
+template: .claude/skills/spec/
 template: .claude/skills/starter-upgrade/
 template: .codex/skills/handoff/
+template: .codex/skills/spec/
 template: .codex/skills/starter-upgrade/
 template: .cursor/skills/handoff/
+template: .cursor/skills/spec/
 template: .cursor/skills/starter-upgrade/
 template: agent_docs/templates/
 template: agent_docs/adr/README.md
 template: agent_docs/development-history/README.md
+template: agent_docs/specs/README.md
 template: agent_docs/guides/archiving-and-temp.md
 template: agent_docs/guides/atomic-documents.md
 template: agent_docs/guides/autodeploy.md
@@ -43,10 +48,12 @@ template: agent_docs/guides/context-management.md
 template: agent_docs/guides/dod.md
 template: agent_docs/guides/environment-setup.md
 template: agent_docs/guides/logging.md
+template: agent_docs/guides/page-audits.md
 
 once: agent_docs/setup-checklist.md
 once: agent_docs/snapshot.md
 once: agent_docs/backlog.md
+once: agent_docs/backlog-closed.md
 once: agent_docs/architecture.md
 once: agent_docs/invariants.md
 once: agent_docs/glossary.md
@@ -64,3 +71,4 @@ mixed: .cursorignore
 project: README.md
 project: agent_docs/adr/
 project: agent_docs/development-history/
+project: agent_docs/specs/

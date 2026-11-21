@@ -13,11 +13,13 @@
 - `agent_docs/invariants.md` — жёсткие правила продукта (нарушение = баг); сверяться при изменениях данных, безопасности, API.
 - `agent_docs/adr/` — атомарный журнал значимых решений (по файлу на решение). Правила: `agent_docs/adr/README.md`.
 - `agent_docs/development-history/` — атомарный журнал итераций (по файлу на итерацию). Правила: `agent_docs/development-history/README.md`.
+- `agent_docs/specs/` — ТЗ задач (по файлу на задачу): требования и критерии приёмки, согласованные до кода. Правила: `agent_docs/specs/README.md`; порядок работы — скилл `/spec`.
 
 ## Состояние (читать при старте сессии, обновлять при завершении)
 
 - `agent_docs/snapshot.md` — текущая точка работы.
 - `agent_docs/backlog.md` — план: Next / Soon / Later / Won't do.
+- `agent_docs/backlog-closed.md` — закрытые пункты бэклога с доказательством; при старте не читать, искать по номеру.
 
 ## Правила и гайды
 
@@ -28,6 +30,9 @@
 - `agent_docs/guides/context-management.md` — **управление контекстом сессии**: когда `/clear`,
   когда `/compact`, что записать перед сбросом. Читать, когда сессия разрослась или задача закрыта.
 - `agent_docs/guides/logging.md` — логирование скриптов/интеграций.
+- `agent_docs/guides/page-audits.md` — **замер публичных страниц** (скорость, SEO, доступность):
+  PageSpeed Insights вместо локального Chrome, W3C Nu, браузер через MCP `playwright`.
+  Читать перед любым замером страницы.
 - `agent_docs/guides/atomic-documents.md` — правила атомарных событийных документов.
 - `agent_docs/guides/archiving-and-temp.md` — архивация и временные файлы.
 
@@ -36,6 +41,7 @@
 - `agent_docs/templates/architecture.md`
 - `agent_docs/templates/adr.md`
 - `agent_docs/templates/development-history.md`
+- `agent_docs/templates/spec.md`
 
 ## Инициализация и обновление
 

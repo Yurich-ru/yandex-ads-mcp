@@ -7,10 +7,16 @@
 > история живёт в `development-history/`.
 
 **Статус:** стабильный релиз 1.3.0; стартер инициализирован
-**Последнее обновление:** 2026-10-04
+**Последнее обновление:** 2026-11-21
 
 ## Что сделано
 
+- 21.11.2026: обновлён стартер до 2026.11.21.1, применено: скилл `/spec` и хук
+  `spec-gate.sh`, новый `/handoff`, гайды (autodeploy, context-management, atomic-documents, dod,
+  page-audits), README журналов; в `AGENTS.md` и `index.md` дописаны разделы стартера (дисциплина
+  ТЗ, машины состояний, `specs/`, потолок 300 строк, пересказ после `/clear`), проектные разделы
+  не тронуты. Отложено вручную: хук `spec-gate.sh` не подключён (опт-ин);
+  `.github/workflows/markdownlint.yml` (once) без шага «не длиннее 300 строк» и с запуском на push.
 - 02–04.10.2026: обнаружена заготовка будущего PR в форке @Tahionnn (ветка
   `feat/ad-images-file-path`: фичи file_path/url для `yd_ad_images_add` + переезд на
   uv/src-layout/Docker); владелец оставил [комментарий-приглашение](https://github.com/Tahionnn/yandex-ads-mcp/commit/152dd935f387f8c662974aa1c2d52ec18b054001#commitcomment-203096506)
